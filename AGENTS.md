@@ -43,6 +43,13 @@ Timeline-based video editor foundation, built to become an AI-native editor late
   stay semantics-only.
 - Effects are declarative (`EffectInstance` + `EFFECT_REGISTRY` in
   `engine/src/effects.ts`) — registry = the vocabulary AI will later emit.
+- Model v2 (`schemaVersion: 2`): keyframes use `EaseSpec` objects
+  (linear/hold/bezier/spring) via `key.set/remove/toggle` ops; `timeRemap`
+  overrides `speed` in `sourceTimeAt`; `SceneClip` references `project.scenes`
+  (must exist before clip.add); `AdjustmentClip` folds into the compositor's
+  post pass; `transitions` = edge fades. Migration in `core/src/migrate.ts`.
+- `applyOps` validates/computes inverses against the evolving batch state —
+  ops may depend on earlier ops in the same batch.
 
 ## Shortcuts
 
