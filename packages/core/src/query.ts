@@ -1,6 +1,7 @@
 import type { Clip, ClipId, Project, Track, TrackId, VideoClip, AudioClip } from "./model.js";
 import type { TimeTicks } from "./time.js";
 import { ticks } from "./time.js";
+import { sample } from "./anim.js";
 
 export function clipEnd(c: Clip): TimeTicks {
   return c.start + c.duration;
@@ -34,6 +35,7 @@ export function clipsInRange(track: Track, start: TimeTicks, end: TimeTicks): Cl
 /** Source-media time inside a clip at timeline time t. */
 export function sourceTimeAt(clip: VideoClip | AudioClip, t: TimeTicks): TimeTicks {
   const local = t - clip.start;
+  if (clip.timeRemap) return sample(clip.timeRemap, local);
   if (clip.speed < 0) {
     return clip.sourceOut - Math.round(local * -clip.speed);
   }

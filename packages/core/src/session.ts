@@ -1,5 +1,6 @@
 import type { OpBatch } from "./ops.js";
 import type { Project } from "./model.js";
+import { migrateProject } from "./migrate.js";
 
 /**
  * Export a session's op log as JSONL — one OpBatch per line.
@@ -18,5 +19,5 @@ export function serializeProject(p: Project): string {
 export function deserializeProject(json: string): Project {
   const p = JSON.parse(json) as Project;
   if (typeof p.schemaVersion !== "number") throw new Error("bad project file");
-  return p;
+  return migrateProject(p);
 }

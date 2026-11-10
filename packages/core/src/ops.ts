@@ -1,10 +1,13 @@
 import { produce, type Draft } from "immer";
 import type {
-  AudioClip, Clip, ClipId, EffectInstance, MediaAsset, Project, TextClip, TextStyle, Track, TrackId, VideoClip,
+  AdjustmentClip, AudioClip, Clip, ClipId, EffectInstance, EaseSpec, Keyframed, MediaAsset,
+  Project, Scene, SceneClip, SceneElement, SceneId, SceneTextElement, ShapeElement, TextClip,
+  TextStyle, Track, TrackId, Transform, VideoClip,
 } from "./model.js";
 import { DEFAULT_TRANSFORM } from "./model.js";
 import type { TimeTicks } from "./time.js";
 import { clipEnd, findClip, findTrack, sourceTimeAt } from "./query.js";
+import { removeKey, setKey, staticOf, toKeyframed } from "./anim.js";
 import { newId } from "./id.js";
 
 /**
@@ -29,7 +32,29 @@ export type Op =
   | { type: "clip.set"; clipId: ClipId; patch: ClipPatch }
   | { type: "effect.add"; clipId: ClipId; effect: EffectInstance }
   | { type: "effect.remove"; clipId: ClipId; effectId: string }
-  | { type: "effect.setParam"; clipId: ClipId; effectId: string; key: string; value: number };
+  | { type: "effect.setParam"; clipId: ClipId; effectId: string; key: string; value: number }
+  | { type: "scene.upsert"; scene: Scene }
+  | { type: "scene.remove"; sceneId: SceneId }
+  | { type: "element.add"; sceneId: SceneId; element: SceneElement; parentGroupId?: string }
+  | { type: "element.remove"; sceneId: SceneId; elementId: string }
+  | { type: "element.set"; sceneId: SceneId; elementId: string; patch: ElementPatch }
+  /** Set a keyframe on a clip's animatable field (currently: "transform"). */
+  | { type: "key.set"; clipId: ClipId; field: "transform"; at: TimeTicks; value: Transform; ease?: EaseSpec }
+  | { type: "key.remove"; clipId: ClipId; field: "transform"; at: TimeTicks }
+  /** Convert a field between static and keyframed. */
+  | { type: "key.toggle"; clipId: ClipId; field: "transform"; keyframed: boolean };
+
+export interface ElementPatch {
+  name?: string;
+  enabled?: boolean;
+  start?: TimeTicks;
+  end?: TimeTicks;
+  transform?: Keyframed<Transform>;
+  fill?: string;
+  content?: string;
+  fontSize?: number;
+  color?: string;
+}
 
 export interface ClipPatch {
   enabled?: boolean;
@@ -81,6 +106,9 @@ function assertValid(p: Project, op: Op): void {
     case "clip.add": {
       const clip = op.clip;
       if (clip.duration <= 0) throw new Error("clip.add: duration must be > 0");
+      if (clip.kind === "scene" && !p.scenes[clip.sceneId]) {
+        throw new Error(`clip.add: unknown scene ${clip.sceneId}`);
+      }
       if (isMediaClip(clip)) {
         if (!p.assets[clip.assetId]) throw new Error(`clip.add: unknown asset ${clip.assetId}`);
         if (clip.sourceOut <= clip.sourceIn) throw new Error("clip.add: sourceOut <= sourceIn");
@@ -214,6 +242,64 @@ function applyOne(d: Draft<Project>, op: Op): void {
       c.sourceOut = c.sourceIn + Math.round(c.duration * Math.abs(op.speed));
       break;
     }
+    case "scene.upsert":
+      d.scenes[op.scene.id] = op.scene as Draft<Scene>;
+      break;
+    case "scene.remove":
+      delete d.scenes[op.sceneId];
+      break;
+    case "element.add": {
+      const s = d.scenes[op.sceneId];
+      if (!s) throw new Error(`element.add: unknown scene ${op.sceneId}`);
+      const list = op.parentGroupId ? findElementIn(s.elements, op.parentGroupId) : undefined;
+      if (op.parentGroupId && (!list || list.kind !== "group")) {
+        throw new Error(`element.add: parent ${op.parentGroupId} is not a group`);
+      }
+      (list?.kind === "group" ? list.elements : s.elements).push(op.element as Draft<SceneElement>);
+      break;
+    }
+    case "element.remove": {
+      const s = d.scenes[op.sceneId];
+      if (s) removeElementFrom(s.elements, op.elementId);
+      break;
+    }
+    case "element.set": {
+      const s = d.scenes[op.sceneId];
+      const el = s && findElementIn(s.elements, op.elementId);
+      if (el) {
+        const p = op.patch;
+        if (p.name !== undefined) el.name = p.name;
+        if (p.enabled !== undefined) el.enabled = p.enabled;
+        if (p.start !== undefined) el.start = p.start;
+        if (p.end !== undefined) el.end = p.end;
+        if (p.transform !== undefined) el.transform = p.transform as never;
+        if (el.kind === "shape" && p.fill !== undefined) el.fill = p.fill;
+        if (el.kind === "text") {
+          if (p.content !== undefined) el.content = p.content;
+          if (p.fontSize !== undefined) el.style.fontSize = p.fontSize;
+          if (p.color !== undefined) el.style.color = p.color;
+        }
+      }
+      break;
+    }
+    case "key.set": {
+      const loc = locate(d, op.clipId);
+      loc.clip.transform = setKey(loc.clip.transform as Keyframed<Transform>, op.at, op.value, op.ease) as never;
+      break;
+    }
+    case "key.remove": {
+      const loc = locate(d, op.clipId);
+      loc.clip.transform = removeKey(loc.clip.transform as Keyframed<Transform>, op.at) as never;
+      break;
+    }
+    case "key.toggle": {
+      const loc = locate(d, op.clipId);
+      const k = loc.clip.transform as Keyframed<Transform>;
+      loc.clip.transform = op.keyframed
+        ? (toKeyframed(k) as never)
+        : ({ static: staticOf(k) } as never);
+      break;
+    }
     case "clip.set": {
       const loc = locate(d, op.clipId);
       const c = loc.clip;
@@ -270,7 +356,13 @@ function splitClip(c: Clip, at: TimeTicks, rightId: ClipId): Clip {
     right.sourceIn = mid;
     right.sourceOut = c.sourceOut;
     c.sourceOut = mid;
+    if (c.timeRemap) {
+      right.timeRemap = sliceKeys(c.timeRemap, leftDur) as never;
+      c.timeRemap = sliceKeys(c.timeRemap, 0, leftDur) as never;
+    }
   }
+  right.transform = sliceKeys(c.transform, leftDur) as never;
+  c.transform = sliceKeys(c.transform, 0, leftDur) as never;
   c.duration = leftDur;
   return right;
 }
@@ -351,6 +443,49 @@ function inverseOf(p: Project, op: Op): Op[] {
       const e = loc?.clip.effects.find((e) => e.id === op.effectId);
       return loc && e ? [{ type: "effect.add", clipId: op.clipId, effect: snapshot(e) }] : [];
     }
+    case "scene.upsert": {
+      const old = p.scenes[op.scene.id];
+      return old
+        ? [{ type: "scene.upsert", scene: snapshot(old) }]
+        : [{ type: "scene.remove", sceneId: op.scene.id }];
+    }
+    case "scene.remove": {
+      const s = p.scenes[op.sceneId];
+      return s ? [{ type: "scene.upsert", scene: snapshot(s) }] : [];
+    }
+    case "element.add":
+      return [{ type: "element.remove", sceneId: op.sceneId, elementId: op.element.id }];
+    case "element.remove": {
+      const s = p.scenes[op.sceneId];
+      const el = s && findElementIn(s.elements, op.elementId);
+      return el ? [{ type: "element.add", sceneId: op.sceneId, element: snapshot(el) }] : [];
+    }
+    case "element.set": {
+      const s = p.scenes[op.sceneId];
+      const el = s && findElementIn(s.elements, op.elementId);
+      if (!el) return [];
+      const cur: ElementPatch = {
+        name: el.name, enabled: el.enabled, start: el.start, end: el.end,
+        transform: el.transform,
+      };
+      if (el.kind === "shape") cur.fill = el.fill;
+      if (el.kind === "text") {
+        cur.content = el.content;
+        cur.fontSize = el.style.fontSize;
+        cur.color = el.style.color;
+      }
+      const patch: ElementPatch = {};
+      for (const k of Object.keys(op.patch) as (keyof ElementPatch)[]) {
+        if (cur[k] !== undefined) (patch as Record<string, unknown>)[k] = cur[k];
+      }
+      return [{ type: "element.set", sceneId: op.sceneId, elementId: op.elementId, patch }];
+    }
+    case "key.set":
+    case "key.remove":
+    case "key.toggle": {
+      const loc = findClip(p, op.clipId);
+      return loc ? [{ type: "clip.replace", clipId: op.clipId, clip: snapshot(loc.clip) }] : [];
+    }
     case "effect.setParam": {
       const loc = findClip(p, op.clipId);
       const e = loc?.clip.effects.find((e) => e.id === op.effectId);
@@ -360,6 +495,35 @@ function inverseOf(p: Project, op: Op): Op[] {
         : [];
     }
   }
+}
+
+export function findElementIn(elements: SceneElement[], id: string): SceneElement | undefined {
+  for (const el of elements) {
+    if (el.id === id) return el;
+    if (el.kind === "group") {
+      const found = findElementIn(el.elements, id);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function removeElementFrom(elements: SceneElement[], id: string): boolean {
+  const i = elements.findIndex((el) => el.id === id);
+  if (i >= 0) {
+    elements.splice(i, 1);
+    return true;
+  }
+  return elements.some((el) => el.kind === "group" && removeElementFrom(el.elements, id));
+}
+
+/** Keys shifted so [from, to) of the source becomes the new key set starting at 0. */
+function sliceKeys<T>(k: Keyframed<T>, from: TimeTicks, to?: TimeTicks): Keyframed<T> {
+  if ("static" in k) return k;
+  const keys = k.keys
+    .filter((key) => key.at >= from && (to === undefined || key.at < to))
+    .map((key) => ({ ...key, at: key.at - from }));
+  return { keys };
 }
 
 function snapshot<T>(v: T): T {
@@ -375,24 +539,26 @@ export function applyOps(project: Project, ops: Op[]): { next: Project; inverse:
   const resolved = ops.map((op) =>
     op.type === "clip.split" && !op.newClipId ? { ...op, newClipId: newId("clip") } : op,
   );
-  for (const op of resolved) assertValid(project, op);
 
+  // Validate + capture inverses against the EVOLVING state so ops can depend
+  // on earlier ops in the same batch (e.g., scene.upsert then clip.add).
   const inverse: Op[] = [];
-  for (let i = resolved.length - 1; i >= 0; i--) {
-    const inv = inverseOf(project, resolved[i]!);
-    // fixup split inverse: replace placeholder with real id
-    for (const io of inv) {
+  let cur = project;
+  const perOp: Op[][] = [];
+  for (const op of resolved) {
+    assertValid(cur, op);
+    perOp.push(inverseOf(cur, op));
+    cur = produce(cur, (d) => applyOne(d, op));
+  }
+  for (let i = perOp.length - 1; i >= 0; i--) {
+    for (const io of perOp[i]!) {
       if (io.type === "clip.remove" && io.clipId === "") {
         io.clipId = (resolved[i] as { newClipId: string }).newClipId;
       }
       inverse.push(io);
     }
   }
-
-  const next = produce(project, (d) => {
-    for (const op of resolved) applyOne(d, op);
-  });
-  return { next, inverse };
+  return { next: cur, inverse };
 }
 
 /** Apply inverse/undo ops (already computed). Does not produce new inverses. */
@@ -466,6 +632,66 @@ export function makeAudioClip(input: {
     speed,
     gain: 1,
     pan: 0,
+    transform: { static: { ...DEFAULT_TRANSFORM } },
+    effects: [],
+    enabled: true,
+  };
+}
+
+export function makeScene(input: { id?: SceneId; name?: string; duration: TimeTicks }): Scene {
+  return { id: input.id ?? newId("scene"), name: input.name ?? "Scene", duration: input.duration, elements: [] };
+}
+
+export function makeShapeElement(input: Partial<ShapeElement> & { shape?: ShapeElement["shape"] }): ShapeElement {
+  return {
+    kind: "shape",
+    id: input.id ?? newId("el"),
+    name: input.name ?? "Shape",
+    start: input.start ?? 0,
+    end: input.end ?? 9_007_199_254_740_991 / 2,
+    shape: input.shape ?? "rect",
+    fill: input.fill ?? "#4f8cff",
+    w: input.w ?? 400,
+    h: input.h ?? 300,
+    transform: input.transform ?? { static: { ...DEFAULT_TRANSFORM } },
+    enabled: input.enabled ?? true,
+    ...(input.cornerRadius !== undefined ? { cornerRadius: input.cornerRadius } : {}),
+  };
+}
+
+export function makeSceneTextElement(input: Partial<SceneTextElement> & { content: string }): SceneTextElement {
+  return {
+    kind: "text",
+    id: input.id ?? newId("el"),
+    name: input.name ?? "Text",
+    start: input.start ?? 0,
+    end: input.end ?? 9_007_199_254_740_991 / 2,
+    content: input.content,
+    style: input.style ?? { fontFamily: "sans-serif", fontSize: 96, color: "#ffffff", align: "center" },
+    transform: input.transform ?? { static: { ...DEFAULT_TRANSFORM } },
+    enabled: input.enabled ?? true,
+  };
+}
+
+export function makeSceneClip(input: { id?: ClipId; sceneId: SceneId; start: TimeTicks; duration: TimeTicks }): SceneClip {
+  return {
+    kind: "scene",
+    id: input.id ?? newId("clip"),
+    sceneId: input.sceneId,
+    start: input.start,
+    duration: input.duration,
+    transform: { static: { ...DEFAULT_TRANSFORM } },
+    effects: [],
+    enabled: true,
+  };
+}
+
+export function makeAdjustmentClip(input: { id?: ClipId; start: TimeTicks; duration: TimeTicks }): AdjustmentClip {
+  return {
+    kind: "adjustment",
+    id: input.id ?? newId("clip"),
+    start: input.start,
+    duration: input.duration,
     transform: { static: { ...DEFAULT_TRANSFORM } },
     effects: [],
     enabled: true,

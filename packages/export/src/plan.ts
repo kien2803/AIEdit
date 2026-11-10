@@ -82,7 +82,12 @@ export function buildExportPlan(
   for (let ti = visualTracks.length - 1; ti >= 0; ti--) {
     for (const clip of visualTracks[ti]!.clips) {
       if (!clip.enabled) continue;
-      if (clip.kind === "audio") continue;
+      if (clip.kind === "audio" || clip.kind === "adjustment") continue;
+      if (clip.kind === "scene") {
+        throw new Error(
+          "export: SceneClip requires the frame-render path (compositor → ffmpeg pipe) — not implemented yet",
+        );
+      }
 
       overlayCount++;
       const out = `v${overlayCount}`;
@@ -114,7 +119,7 @@ export function buildExportPlan(
   for (const track of project.tracks) {
     if (track.muted) continue;
     for (const clip of track.clips) {
-      if (!clip.enabled || clip.kind === "text") continue;
+      if (!clip.enabled || (clip.kind !== "video" && clip.kind !== "audio")) continue;
       const asset = project.assets[clip.assetId];
       if (!asset?.hasAudio) continue;
       const idx = assetFile(clip.assetId);
@@ -145,10 +150,23 @@ export function buildExportPlan(
     audioMap = ["-map", "[aout]"];
   }
 
+  // adjustment clips apply their effects to the whole composited frame
+  const adjustment = project.tracks
+    .flatMap((t) => t.clips)
+    .find((c) => c.kind === "adjustment" && c.enabled && c.effects.length > 0);
+  let finalLabel = baseLabel;
+  if (adjustment) {
+    const eq = eqParams(adjustment.effects);
+    if (eq) {
+      filters.push(`[${baseLabel}]${eq}[vadj]`);
+      finalLabel = "vadj";
+    }
+  }
+
   const outFile = "out.mp4";
   argv.push(
     "-filter_complex", filters.join(";"),
-    "-map", `[${baseLabel}]`,
+    "-map", `[${finalLabel}]`,
     ...(audioMap.length ? audioMap : []),
     "-c:v", ...vCodec,
     "-pix_fmt", "yuv420p", "-r", String(fpsF),
@@ -209,15 +227,15 @@ function videoChain(project: Project, clip: VideoClip, inputIdx: number): string
   if (tr?.rotation) f.push(`rotate=${tr.rotation}:c=none:ow=${w}:oh=${h}`);
   if (tr && tr.opacity < 1) f.push(`format=rgba,colorchannelmixer=aa=${tr.opacity.toFixed(3)}`);
   // effect mapping (mirrors the compositor's uniforms, approximate)
-  const eq = eqParams(clip);
+  const eq = eqParams(clip.effects);
   if (eq) f.push(eq);
   return `[${inputIdx}:v]${f.join(",")}[c${inputIdx}v${clipSuffix(clip.id)}]`;
 }
 
-function eqParams(clip: VideoClip): string | null {
+function eqParams(effects: { enabled: boolean; type: string; params: Record<string, number> }[]): string | null {
   let brightness = 0, contrast = 1, saturation = 1;
   let rr = 1, bb = 1;
-  for (const e of clip.effects) {
+  for (const e of effects) {
     if (!e.enabled || e.type !== "color.basic") continue;
     brightness += (e.params["exposure"] ?? 0) * 0.15; // EV → eq brightness approx
     contrast *= e.params["contrast"] ?? 1;

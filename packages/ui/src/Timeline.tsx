@@ -25,6 +25,8 @@ export function Timeline(): React.ReactElement {
   const setZoom = useEditor((s) => s.setZoom);
   const splitAtPlayhead = useEditor((s) => s.splitAtPlayhead);
   const addTextClip = useEditor((s) => s.addTextClip);
+  const addSceneClip = useEditor((s) => s.addSceneClip);
+  const addAdjustmentClip = useEditor((s) => s.addAdjustmentClip);
   const dropOnTimeline = useEditor((s) => s.dropOnTimeline);
   const peaks = useEditor((s) => s.peaks);
 
@@ -195,6 +197,8 @@ export function Timeline(): React.ReactElement {
         <button className={tool === "blade" ? "active" : ""} onClick={() => setTool("blade")} title="Blade (B)">✂</button>
         <button onClick={splitAtPlayhead} title="Split at playhead (S)">Split</button>
         <button onClick={addTextClip} title="Add text (T)">T</button>
+        <button onClick={addSceneClip} title="Add scene (motion graphics)">⬒ Scene</button>
+        <button onClick={addAdjustmentClip} title="Add adjustment layer">Adj</button>
         <span className="tl-zoom">
           <button onClick={() => setZoom(pxPerSec / 1.4)}>−</button>
           <button onClick={() => setZoom(pxPerSec * 1.4)}>+</button>
@@ -267,6 +271,14 @@ export function Timeline(): React.ReactElement {
                           clip={clip}
                         />
                       )}
+                      {"keys" in clip.transform && clip.transform.keys.map((k) => (
+                        <i
+                          key={k.at}
+                          className="tl-key"
+                          style={{ left: ticks.toSeconds(k.at) * pxPerSec }}
+                          title="keyframe"
+                        />
+                      ))}
                       <span className="tl-clip-label">{clipLabel(clip)}</span>
                       <i className="tl-edge l" /><i className="tl-edge r" />
                     </div>

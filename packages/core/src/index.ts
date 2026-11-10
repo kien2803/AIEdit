@@ -7,3 +7,4 @@ export * from "./ops.js";
 export * from "./dispatcher.js";
 export * from "./session.js";
 export * from "./placement.js";
+export * from "./migrate.js";

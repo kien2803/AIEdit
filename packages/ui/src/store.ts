@@ -3,7 +3,8 @@ import type { ClipId, MediaAsset, Op, Project, TimeTicks } from "@aiedit/core";
 import {
   createProject, createTrack, deserializeProject, Dispatcher,
   exportSessionLog, makeAudioClip, makeVideoClip, makeTextClip,
-  newId, resolvePlacement, rippleDeleteOps, sec, serializeProject,
+  makeScene, makeSceneClip, makeShapeElement, makeSceneTextElement,
+  makeAdjustmentClip, newId, resolvePlacement, rippleDeleteOps, sec, serializeProject,
   timelineEnd, ticks,
 } from "@aiedit/core";
 import type { PreviewPlayer } from "@aiedit/engine";
@@ -41,6 +42,8 @@ interface EditorState {
   addToTimeline(assetId: string): void;
   dropOnTimeline(assetId: string, at: TimeTicks, trackIndex: number): void;
   addTextClip(): void;
+  addSceneClip(): void;
+  addAdjustmentClip(): void;
   splitAtPlayhead(): void;
   deleteSelected(ripple?: boolean): void;
   newProject(): void;
@@ -151,6 +154,40 @@ export const useEditor = create<EditorState>((set, get) => {
       const clip = makeTextClip({ start: s.playhead, duration: sec(4), content: "New text" });
       ops.push({ type: "clip.add", trackId: track.id, clip });
       s.dispatch(ops, "add text");
+      set({ selection: [clip.id] });
+    },
+
+    addSceneClip: () => {
+      const s = get();
+      const ops: Op[] = [];
+      let track = s.project.tracks.find((t) => t.kind === "video");
+      if (!track) {
+        track = createTrack("video", "V1", newId("track"));
+        ops.push({ type: "track.add", track });
+      }
+      const dur = sec(4);
+      const scene = makeScene({ duration: dur });
+      scene.elements.push(
+        makeShapeElement({ shape: "rect", fill: "#4f8cff", w: 600, h: 200, cornerRadius: 24 }),
+        makeSceneTextElement({ content: "Scene text", style: { fontFamily: "sans-serif", fontSize: 64, color: "#ffffff", align: "center" } }),
+      );
+      const clip = makeSceneClip({ sceneId: scene.id, start: s.playhead, duration: dur });
+      ops.push({ type: "scene.upsert", scene }, { type: "clip.add", trackId: track.id, clip });
+      s.dispatch(ops, "add scene");
+      set({ selection: [clip.id] });
+    },
+
+    addAdjustmentClip: () => {
+      const s = get();
+      let track = s.project.tracks.find((t) => t.kind === "video");
+      const ops: Op[] = [];
+      if (!track) {
+        track = createTrack("video", "V1", newId("track"));
+        ops.push({ type: "track.add", track });
+      }
+      const clip = makeAdjustmentClip({ start: s.playhead, duration: sec(4) });
+      ops.push({ type: "clip.add", trackId: track.id, clip });
+      s.dispatch(ops, "add adjustment");
       set({ selection: [clip.id] });
     },
 

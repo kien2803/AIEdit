@@ -222,3 +222,86 @@ describe("placement", () => {
     expect(findClip(next, "c3")!.clip.start).toBe(sec(6));
   });
 });
+
+describe("model v2: keyframes, scenes, timeRemap", () => {
+  it("key.toggle converts static <-> keyframed, key.set adds keys", async () => {
+    const { makeTextClip, sample, ticks } = await import("../src/index.js");
+    const { p, trackId } = fixtureProject();
+    const clip = makeTextClip({ id: "tc1", start: 0, duration: sec(4), content: "k" });
+    let cur = applyOps(p, [{ type: "clip.add", trackId, clip }]).next;
+    cur = applyOps(cur, [{ type: "key.toggle", clipId: "tc1", field: "transform", keyframed: true }]).next;
+    cur = applyOps(cur, [
+      { type: "key.set", clipId: "tc1", field: "transform", at: sec(2),
+        value: { x: 100, y: 0, scaleX: 2, scaleY: 2, rotation: 0, opacity: 1 } },
+    ]).next;
+    const c = findClip(cur, "tc1")!.clip;
+    const t = sample(c.transform, sec(1));
+    expect(t.x).toBeCloseTo(50);
+    expect(t.scaleX).toBeCloseTo(1.5);
+  });
+
+  it("bezier ease differs from linear", async () => {
+    const { cubicBezierY } = await import("../src/index.js");
+    // ease-out cubic (0.25,1) shape: early progress > linear
+    expect(cubicBezierY(0.25, 1, 0.25, 1, 0.5)).toBeGreaterThan(0.8);
+    expect(cubicBezierY(0, 0, 1, 1, 0.5)).toBeCloseTo(0.5);
+  });
+
+  it("spring overshoots then settles to 1", async () => {
+    const { springOut } = await import("../src/index.js");
+    expect(springOut(0.4, 100, 8)).toBeGreaterThan(1.0);
+    expect(springOut(1, 100, 8)).toBeCloseTo(1, 2);
+  });
+
+  it("split slices keyframes between the two clips", async () => {
+    const { makeTextClip } = await import("../src/index.js");
+    const { p, trackId } = fixtureProject();
+    const clip = makeTextClip({ id: "tc1", start: 0, duration: sec(4), content: "k" });
+    clip.transform = { keys: [
+      { at: 0, value: { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1 }, ease: { kind: "linear" } },
+      { at: sec(3), value: { x: 300, y: 0, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1 }, ease: { kind: "linear" } },
+    ] };
+    let cur = applyOps(p, [{ type: "clip.add", trackId, clip }]).next;
+    cur = applyOps(cur, [{ type: "clip.split", clipId: "tc1", at: sec(2), newClipId: "tc2" }]).next;
+    const l = findClip(cur, "tc1")!.clip;
+    const r = findClip(cur, "tc2")!.clip;
+    expect("keys" in l.transform && l.transform.keys).toHaveLength(1);
+    expect("keys" in r.transform && r.transform.keys[0]!.at).toBe(sec(1));
+  });
+
+  it("timeRemap overrides speed in sourceTimeAt", async () => {
+    const { sourceTimeAt } = await import("../src/index.js");
+    const clip = makeVideoClip({ assetId: "a1", start: 0, sourceIn: 0, sourceOut: sec(4) });
+    clip.timeRemap = { keys: [
+      { at: 0, value: 0, ease: { kind: "linear" } },
+      { at: sec(4), value: sec(2), ease: { kind: "linear" } }, // ramp to half speed
+    ] };
+    expect(sourceTimeAt(clip, sec(2))).toBe(sec(1));
+    delete clip.timeRemap;
+    expect(sourceTimeAt(clip, sec(2))).toBe(sec(2));
+  });
+
+  it("scene ops: upsert + element ops + undo", async () => {
+    const { makeScene, makeSceneClip, makeShapeElement, makeSceneTextElement, findElementIn } = await import("../src/index.js");
+    const { p, trackId } = fixtureProject();
+    const d = new Dispatcher(p);
+    const scene = makeScene({ id: "sc1", duration: sec(4) });
+    scene.elements.push(
+      makeShapeElement({ id: "sh1", fill: "#ff0000" }),
+      makeSceneTextElement({ id: "te1", content: "hello" }),
+    );
+    d.dispatch([
+      { type: "scene.upsert", scene },
+      { type: "clip.add", trackId, clip: makeSceneClip({ sceneId: "sc1", start: 0, duration: sec(4) }) },
+    ], "add scene");
+    expect(d.project.scenes["sc1"]).toBeDefined();
+    d.dispatch([{ type: "element.set", sceneId: "sc1", elementId: "sh1", patch: { fill: "#00ff00" } }], "recolor");
+    expect((findElementIn(d.project.scenes["sc1"]!.elements, "sh1") as { fill: string }).fill).toBe("#00ff00");
+    d.undo();
+    expect((findElementIn(d.project.scenes["sc1"]!.elements, "sh1") as { fill: string }).fill).toBe("#ff0000");
+    // clip.add requires existing scene
+    expect(() => applyOps(d.project, [
+      { type: "clip.add", trackId, clip: makeSceneClip({ sceneId: "nope", start: 0, duration: sec(1) }) },
+    ])).toThrow();
+  });
+});

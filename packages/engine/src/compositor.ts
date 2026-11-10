@@ -55,6 +55,8 @@ export class Compositor {
   private prog: WebGLProgram;
   private vbo: WebGLBuffer;
   private texCache = new WeakMap<object, WebGLTexture>();
+  private fbo: WebGLFramebuffer;
+  private fboTex: WebGLTexture;
   private W: number;
   private H: number;
   private uModel: WebGLUniformLocation;
@@ -99,7 +101,47 @@ export class Compositor {
     }
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // offscreen target for the post-process (adjustment) pass
+    this.fboTex = gl.createTexture()!;
+    this.fbo = gl.createFramebuffer()!;
     this.resizeCanvas();
+  }
+
+  /** Begin rendering into the offscreen buffer. */
+  beginScene(): void {
+    const gl = this.gl;
+    const w = Math.max(2, this.canvas.width), h = Math.max(2, this.canvas.height);
+    gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fboTex, 0);
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  /** Blit the offscreen buffer to screen, applying post uniforms (adjustment layer). */
+  finishScene(post: EffectUniforms): void {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
+    gl.uniform1i(this.u("uTex"), 0);
+    gl.uniform1f(this.u("uOpacity"), 1);
+    gl.uniform1f(this.u("uExposure"), post.exposure);
+    gl.uniform1f(this.u("uContrast"), post.contrast);
+    gl.uniform1f(this.u("uSaturation"), post.saturation);
+    gl.uniform1f(this.u("uTemperature"), post.temperature);
+    const identity = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    gl.uniformMatrix3fv(this.uModel, false, identity);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
   resizeCanvas(): void {
@@ -139,6 +181,7 @@ export class Compositor {
       gl.bindTexture(gl.TEXTURE_2D, tex);
     }
     try {
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     } catch {
       return null; // element not ready (metadata not loaded)
@@ -151,7 +194,7 @@ export class Compositor {
    * srcW/srcH = native pixels; the clip is scaled "contain" into the project
    * frame, then the clip transform applies on top.
    */
-  drawClip(clip: Clip, handle: MediaHandle, source: TexImageSource, srcW: number, srcH: number, t: TimeTicks): void {
+  drawClip(clip: Clip, handle: MediaHandle, source: TexImageSource, srcW: number, srcH: number, t: TimeTicks, opacityMul = 1): void {
     const gl = this.gl;
     const tex = this.textureFor(source, handle);
     if (!tex) return;
@@ -161,7 +204,7 @@ export class Compositor {
 
     const tr: Transform = sample(clip.transform, t - clip.start);
     const fx: EffectUniforms = uniformsFor(clip.effects);
-    gl.uniform1f(this.u("uOpacity"), tr.opacity * (clip.enabled ? 1 : 0));
+    gl.uniform1f(this.u("uOpacity"), tr.opacity * opacityMul * (clip.enabled ? 1 : 0));
     gl.uniform1f(this.u("uExposure"), fx.exposure);
     gl.uniform1f(this.u("uContrast"), fx.contrast);
     gl.uniform1f(this.u("uSaturation"), fx.saturation);

@@ -3,8 +3,8 @@ import type { AssetId, Clip, MediaAsset } from "@aiedit/core";
 export interface MediaHandle {
   clipId: string;
   el: HTMLVideoElement;
-  /** For text clips: a 2D canvas rendered by the compositor. */
-  textCanvas?: HTMLCanvasElement;
+  /** For text/scene clips: a 2D canvas rendered by the compositor. */
+  canvas?: HTMLCanvasElement;
 }
 
 /**
@@ -24,8 +24,13 @@ export class MediaPool {
   ensure(clip: Clip, assetId?: AssetId): MediaHandle | undefined {
     const existing = this.handles.get(clip.id);
     if (existing) return existing;
-    if (clip.kind === "text") {
-      const h: MediaHandle = { clipId: clip.id, el: undefined as never, textCanvas: document.createElement("canvas") };
+    if (clip.kind === "text" || clip.kind === "scene") {
+      const h: MediaHandle = { clipId: clip.id, el: undefined as never, canvas: document.createElement("canvas") };
+      this.handles.set(clip.id, h);
+      return h;
+    }
+    if (clip.kind === "adjustment") {
+      const h: MediaHandle = { clipId: clip.id, el: undefined as never };
       this.handles.set(clip.id, h);
       return h;
     }
@@ -44,6 +49,21 @@ export class MediaPool {
 
   get(clipId: string): MediaHandle | undefined {
     return this.handles.get(clipId);
+  }
+
+  /** Element-level media (footage inside scenes), keyed independently of clips. */
+  ensureKey(key: string, assetId: string): MediaHandle | undefined {
+    const existing = this.handles.get(key);
+    if (existing) return existing;
+    const asset = this.assetOf.get(assetId);
+    if (!asset) return undefined;
+    const el = document.createElement("video");
+    el.src = asset.proxyUrl ?? asset.sourceUrl;
+    el.preload = "auto";
+    el.playsInline = true;
+    const h: MediaHandle = { clipId: key, el };
+    this.handles.set(key, h);
+    return h;
   }
 
   /** Drop handles for clips no longer active. */

@@ -91,3 +91,14 @@ textarea { width: 100%; min-height: 48px; resize: vertical; }
 .app-inspector { grid-row: 2; }
 .app-timeline { grid-row: 3; }
 .mb-item { user-select: none; }
+
+.tl-key { position: absolute; bottom: 3px; width: 6px; height: 6px; background: #ffd166; transform: rotate(45deg); margin-left: -3px; pointer-events: none; }
+.tl-clip.kind-scene { background: #5b3d8a; }
+.tl-clip.kind-adjustment { background: #3d3d52; border-style: dashed; }
+.in-el-list { max-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
+.in-el { display: flex; align-items: center; gap: 6px; padding: 4px 6px; cursor: pointer; font-size: 12px; }
+.in-el:hover { background: var(--panel2); }
+.in-el.sel { background: rgba(79,140,255,0.15); }
+.in-el-kind { color: var(--dim); font-size: 10px; min-width: 46px; }
+.in-el button { margin-left: auto; padding: 0 4px; font-size: 10px; }
+.in-num select { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; }

@@ -1,10 +1,12 @@
-import type { AudioClip, Clip, MediaAsset, Project, VideoClip } from "@aiedit/core";
-import { clipEnd, sourceTimeAt, ticks, timelineEnd } from "@aiedit/core";
+import type { AdjustmentClip, AudioClip, Clip, FootageElement, MediaAsset, Project, Scene, SceneClip, SceneElement, VideoClip } from "@aiedit/core";
+import { clipEnd, sourceTimeAt, ticks, timelineEnd, findElementIn } from "@aiedit/core";
 import type { TimeTicks } from "@aiedit/core";
 import { PlaybackClock } from "./clock.js";
 import { Compositor } from "./compositor.js";
 import { MediaPool } from "./mediaPool.js";
 import { activeClipsAt } from "./resolve.js";
+import { CanvasSceneRenderer, type SceneRenderContext } from "./sceneRenderer.js";
+import { uniformsFor, NEUTRAL_UNIFORMS } from "./effects.js";
 
 const DRIFT_TOLERANCE_S = 0.08;
 
@@ -21,6 +23,7 @@ export class PreviewPlayer {
   private raf = 0;
   private listeners = new Set<(t: TimeTicks) => void>();
   private textRenderers = new Map<string, { canvas: HTMLCanvasElement; dirtyFor: string }>();
+  private sceneRenderer = new CanvasSceneRenderer();
 
   constructor(private canvas: HTMLCanvasElement, project: Project) {
     this.project = project;
@@ -95,10 +98,10 @@ export class PreviewPlayer {
     const activeIds = new Set<string>();
 
     this.compositor.resizeCanvas();
-    this.compositor.clear();
+    this.compositor.beginScene();
 
     // Draw order: tracks[0] is topmost -> draw last. Visual kinds only.
-    const visual = active.filter(({ clip }) => clip.kind !== "audio");
+    const visual = active.filter(({ clip }) => clip.kind !== "audio" && clip.kind !== "adjustment");
     for (let i = visual.length - 1; i >= 0; i--) {
       const { clip } = visual[i]!;
       activeIds.add(clip.id);
@@ -107,13 +110,19 @@ export class PreviewPlayer {
 
       if (clip.kind === "text") {
         const cnv = this.renderText(clip);
-        this.compositor.drawClip(clip, handle, cnv, cnv.width, cnv.height, t);
-      } else {
+        this.compositor.drawClip(clip, handle, cnv, cnv.width, cnv.height, t, this.transitionFade(clip, t));
+      } else if (clip.kind === "scene") {
+        const scene = p.scenes[clip.sceneId];
+        if (!scene || !handle.canvas) continue;
+        this.syncSceneFootage(scene, t - clip.start, clip.id, activeIds);
+        this.renderSceneCanvas(handle.canvas, scene, t - clip.start);
+        this.compositor.drawClip(clip, handle, handle.canvas, p.settings.width, p.settings.height, t, this.transitionFade(clip, t));
+      } else if (clip.kind === "video") {
         const el = handle.el;
         if (!el) continue;
         this.syncElement(el, clip, t);
         if (el.readyState >= 2) {
-          this.compositor.drawClip(clip, handle, el, el.videoWidth || 16, el.videoHeight || 9, t);
+          this.compositor.drawClip(clip, handle, el, el.videoWidth || 16, el.videoHeight || 9, t, this.transitionFade(clip, t));
         }
       }
     }
@@ -133,15 +142,72 @@ export class PreviewPlayer {
       }
     }
 
+    // adjustment layer: first active adjustment clip's effects = post uniforms
+    const adj = active.find(({ clip }) => clip.kind === "adjustment" && clip.enabled)?.clip;
+    const post = adj ? uniformsFor(adj.effects) : NEUTRAL_UNIFORMS;
+    this.compositor.finishScene(post);
+
     this.pool.retain(activeIds);
   }
 
-  private syncElement(el: HTMLVideoElement, clip: VideoClip | AudioClip, t: TimeTicks): void {
-    const expected = ticks.toSeconds(sourceTimeAt(clip, t));
-    const playing = this.clock.playing;
-    const rate = Math.abs(clip.speed) * this.clock.rate;
+  /** Fade multiplier from edge transitions (fade / dip-black ≈ opacity ramp). */
+  private transitionFade(clip: Clip, t: TimeTicks): number {
+    const trs = clip.transitions;
+    if (!trs) return 1;
+    const local = t - clip.start;
+    let f = 1;
+    if (trs.in && trs.in.duration > 0) f = Math.min(f, local / trs.in.duration);
+    if (trs.out && trs.out.duration > 0) f = Math.min(f, (clip.duration - local) / trs.out.duration);
+    return Math.max(0, f);
+  }
 
-    if (playing && clip.speed >= 0) {
+  /** Ensure footage elements inside the scene have synced media elements. */
+  private syncSceneFootage(scene: Scene, sceneT: TimeTicks, clipId: string, activeIds: Set<string>): void {
+    const walk = (els: SceneElement[]) => {
+      for (const el of els) {
+        if (el.kind === "group") { walk(el.elements); continue; }
+        if (el.kind !== "footage" || !el.enabled) continue;
+        if (sceneT < el.start || sceneT >= el.end) continue;
+        const key = `${clipId}:${el.id}`;
+        activeIds.add(key);
+        const h = this.pool.ensureKey(key, el.assetId);
+        if (!h?.el) continue;
+        const src = el.sourceIn + Math.round((sceneT - el.start) * Math.abs(el.speed));
+        this.syncRaw(h.el, src, this.clock.playing ? Math.abs(el.speed) * this.clock.rate : 0);
+      }
+    };
+    walk(scene.elements);
+  }
+
+  private renderSceneCanvas(cnv: HTMLCanvasElement, scene: Scene, sceneT: TimeTicks): void {
+    const { width: W, height: H } = this.project.settings;
+    if (cnv.width !== W || cnv.height !== H) { cnv.width = W; cnv.height = H; }
+    const ctx = cnv.getContext("2d")!;
+    ctx.clearRect(0, 0, W, H);
+    const sctx: SceneRenderContext = {
+      project: this.project,
+      mediaFor: (key, assetId) => this.pool.ensureKey(`${scene.id}:${key}`, assetId),
+      syncMedia: (el, src) => this.syncRaw(el, src, 0),
+    };
+    this.sceneRenderer.render(scene, sceneT, ctx, sctx);
+  }
+
+  private syncElement(el: HTMLVideoElement, clip: VideoClip | AudioClip, t: TimeTicks): void {
+    const expected = sourceTimeAt(clip, t);
+    const playing = this.clock.playing;
+    const rate = (clip.speed >= 0 ? clip.speed : -clip.speed) * this.clock.rate;
+    const playingForward = playing && clip.speed >= 0;
+    this.syncRawCommon(el, expected, playingForward, rate);
+  }
+
+  /** Low-level sync: keep element at `srcTicks` (paused stepping or rate playback). */
+  private syncRaw(el: HTMLVideoElement, srcTicks: TimeTicks, rate: number): void {
+    this.syncRawCommon(el, srcTicks, rate > 0, rate);
+  }
+
+  private syncRawCommon(el: HTMLVideoElement, expectedTicks: TimeTicks, playingForward: boolean, rate: number): void {
+    const expected = ticks.toSeconds(expectedTicks);
+    if (playingForward) {
       // forward playback: let element run, correct drift
       el.playbackRate = Math.max(0.0625, Math.min(16, rate));
       if (Math.abs(el.currentTime - expected) > DRIFT_TOLERANCE_S) {
