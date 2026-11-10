@@ -7,8 +7,9 @@ import {
   makeAdjustmentClip, newId, resolvePlacement, rippleDeleteOps, sec, serializeProject,
   timelineEnd, ticks,
 } from "@aiedit/core";
-import type { PreviewPlayer } from "@aiedit/engine";
-import { buildExportPlan, WasmRunner } from "@aiedit/export";
+import { PreviewPlayer } from "@aiedit/engine";
+import { buildExportPlan, buildFramePlan, WasmRunner } from "@aiedit/export";
+import { captureTemplate, deserializeTemplate, instantiateTemplate, serializeTemplate, type ParamValues, type Template } from "@aiedit/template";
 
 export type Tool = "select" | "blade";
 
@@ -24,6 +25,7 @@ interface EditorState {
   peaks: Record<string, number[]>;
   /** 0..1 while exporting, null when idle. */
   exportProgress: number | null;
+  templates: Template[];
 
   setPlayer(p: PreviewPlayer | null): void;
   dispatch(ops: Op[], label: string): void;
@@ -47,6 +49,9 @@ interface EditorState {
   splitAtPlayhead(): void;
   deleteSelected(ripple?: boolean): void;
   newProject(): void;
+  saveTemplate(name: string): void;
+  applyTemplate(id: string, values: ParamValues): void;
+  deleteTemplate(id: string): void;
   saveProject(): void;
   loadProject(file: File): Promise<void>;
   exportSession(): void;
@@ -70,6 +75,7 @@ export const useEditor = create<EditorState>((set, get) => {
     pxPerSec: 80,
     peaks: {},
     exportProgress: null,
+    templates: loadTemplates(),
 
     setPlayer: (player) => set({ player }),
 
@@ -242,6 +248,30 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
 
+    saveTemplate: (name) => {
+      const s = get();
+      if (!s.selection.length) return;
+      const tpl = captureTemplate(s.project, s.selection, { name });
+      const templates = [...s.templates, tpl];
+      set({ templates });
+      persistTemplates(templates);
+    },
+
+    applyTemplate: (id, values) => {
+      const s = get();
+      const tpl = s.templates.find((t) => t.id === id);
+      if (!tpl) return;
+      const { ops, warnings } = instantiateTemplate(tpl, values, s.project, s.playhead);
+      for (const w of warnings) console.warn("template:", w);
+      s.dispatch(ops, `apply template "${tpl.name}"`);
+    },
+
+    deleteTemplate: (id) => {
+      const templates = get().templates.filter((t) => t.id !== id);
+      set({ templates });
+      persistTemplates(templates);
+    },
+
     saveProject: () => {
       const blob = new Blob([serializeProject(get().project)], { type: "application/json" });
       downloadBlob(blob, "project.aiedit.json");
@@ -266,6 +296,9 @@ export const useEditor = create<EditorState>((set, get) => {
     exportVideo: async () => {
       const s = get();
       if (s.exportProgress !== null) return;
+      const needsFrames = s.project.tracks.some((t) =>
+        t.clips.some((c) => c.kind === "scene" || c.kind === "adjustment"));
+      if (needsFrames) return exportFrameRender(get, set);
       set({ exportProgress: 0 });
       try {
         const project = s.project;
@@ -412,4 +445,87 @@ function renderTextPng(
   const png = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) png[i] = bin.charCodeAt(i);
   return { png, w, h };
+}
+
+
+/** Frame-render export: compositor renders every frame → mjpeg → ffmpeg. */
+async function exportFrameRender(
+  get: () => EditorState,
+  set: (partial: Partial<EditorState>) => void,
+): Promise<void> {
+  const project = get().project;
+  set({ exportProgress: 0 });
+  const plan = buildFramePlan(project);
+  const frameTicks = Math.round(90_000 / plan.fps);
+
+  // offscreen player — DOM elements still work (media pool needs DOM)
+  const cnv = document.createElement("canvas");
+  cnv.width = plan.width;
+  cnv.height = plan.height;
+  cnv.style.cssText = `position:fixed;left:-9999px;top:0;width:${plan.width}px;height:${plan.height}px`;
+  document.body.appendChild(cnv);
+  const player = new PreviewPlayer(cnv, project);
+  try {
+    // 1. render frames → concatenated jpeg stream
+    const chunks: Uint8Array[] = [];
+    for (let f = 0; f < plan.frameCount; f++) {
+      player.renderAt(f * frameTicks);
+      await player.waitForMediaReady(2500);
+      const dataUrl = cnv.toDataURL("image/jpeg", 0.9);
+      const b64 = dataUrl.split(",")[1]!;
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      chunks.push(bytes);
+      set({ exportProgress: (f / plan.frameCount) * 0.6 });
+      if (f % 10 === 0) await new Promise((r) => setTimeout(r, 0)); // yield to UI
+    }
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const mjpeg = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { mjpeg.set(c, off); off += c.length; }
+
+    // 2. input files for the audio pass
+    const files: Record<string, Uint8Array> = { "frames.mjpeg": mjpeg };
+    for (const inp of plan.inputs) {
+      if (inp.assetId) {
+        const url = project.assets[inp.assetId]!.sourceUrl;
+        files[inp.file] = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      }
+    }
+
+    // 3. run phases
+    const argvs = [plan.videoArgv, ...(plan.audioArgv ? [plan.audioArgv] : []), plan.muxArgv];
+    const phases = argvs.map((_, i) => (f: number) =>
+      set({ exportProgress: 0.6 + ((i + f) / argvs.length) * 0.4 }));
+    const runner = new WasmRunner();
+    const out = await runner.runPhases(argvs, files, plan.outFile, phases);
+    downloadBlob(new Blob([out as never], { type: "video/mp4" }), `aiedit-${Date.now()}.mp4`);
+  } catch (e) {
+    console.error("frame export failed", e);
+    alert(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    player.dispose();
+    cnv.remove();
+    set({ exportProgress: null });
+  }
+}
+
+
+const TPL_KEY = "aiedit.templates.v1";
+
+function loadTemplates(): Template[] {
+  try {
+    const raw = localStorage.getItem(TPL_KEY);
+    if (!raw) return [];
+    return (JSON.parse(raw) as string[]).map((j) => deserializeTemplate(j));
+  } catch {
+    return [];
+  }
+}
+
+function persistTemplates(templates: Template[]): void {
+  try {
+    localStorage.setItem(TPL_KEY, JSON.stringify(templates.map((t) => serializeTemplate(t))));
+  } catch { /* quota */ }
 }

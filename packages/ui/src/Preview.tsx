@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { PreviewPlayer } from "@aiedit/engine";
 import { formatTimecode, timelineEnd } from "@aiedit/core";
 import { useEditor } from "./store.js";
+import { SceneOverlay } from "./SceneOverlay.jsx";
 
 export function Preview(): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -27,7 +28,10 @@ export function Preview(): React.ReactElement {
 
   return (
     <div className="pv-root">
-      <canvas ref={canvasRef} className="pv-canvas" />
+      <div className="pv-stage">
+        <canvas ref={canvasRef} className="pv-canvas" />
+        <SceneOverlay />
+      </div>
       <div className="pv-transport">
         <button onClick={() => seek(0)} title="Start">⏮</button>
         <button onClick={togglePlay} title="Play/Pause (Space)">{playing ? "⏸" : "▶"}</button>

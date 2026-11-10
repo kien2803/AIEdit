@@ -1,6 +1,7 @@
 import React, { useRef } from "react";
 import { ticks } from "@aiedit/core";
 import { useEditor } from "./store.js";
+import { TemplatesPanel } from "./TemplatesPanel.jsx";
 
 export function MediaBin(): React.ReactElement {
   const project = useEditor((s) => s.project);
@@ -21,7 +22,7 @@ export function MediaBin(): React.ReactElement {
           onChange={(e) => { if (e.target.files) void importFiles(e.target.files); e.target.value = ""; }}
         />
       </div>
-      <div className="mb-list">
+      <div className="mb-list" style={{ flex: "0 0 55%" }}>
         {assets.length === 0 && <div className="mb-empty">Import media to start</div>}
         {assets.map((a) => (
           <div
@@ -41,6 +42,7 @@ export function MediaBin(): React.ReactElement {
           </div>
         ))}
       </div>
+      <TemplatesPanel />
     </div>
   );
 }

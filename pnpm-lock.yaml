@@ -88,6 +88,19 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@26.6.6)
 
+  packages/template:
+    dependencies:
+      '@aiedit/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@26.6.6)
+
   packages/ui:
     dependencies:
       '@aiedit/core':
@@ -99,6 +112,9 @@ importers:
       '@aiedit/export':
         specifier: workspace:*
         version: link:../export
+      '@aiedit/template':
+        specifier: workspace:*
+        version: link:../template
       zustand:
         specifier: ^5.0.2
         version: 5.1.0(@types/react@18.3.31)(immer@10.2.0)(react@18.3.1)

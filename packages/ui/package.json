@@ -11,7 +11,8 @@
     "@aiedit/core": "workspace:*",
     "@aiedit/engine": "workspace:*",
     "zustand": "^5.0.2",
-    "@aiedit/export": "workspace:*"
+    "@aiedit/export": "workspace:*",
+    "@aiedit/template": "workspace:*"
   },
   "peerDependencies": {
     "react": ">=18",

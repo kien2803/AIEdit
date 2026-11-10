@@ -78,6 +78,10 @@ export class MediaPool {
     }
   }
 
+  allHandles(): MediaHandle[] {
+    return [...this.handles.values()];
+  }
+
   dispose(): void {
     this.retain(new Set());
   }

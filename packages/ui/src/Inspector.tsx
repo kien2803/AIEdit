@@ -4,6 +4,7 @@ import { findClip, sample, staticOf, ticks, findElementIn } from "@aiedit/core";
 import { EFFECT_REGISTRY, makeEffect } from "@aiedit/engine";
 import { newId } from "@aiedit/core";
 import { useEditor } from "./store.js";
+import { GraphEditor } from "./GraphEditor.jsx";
 
 export function Inspector(): React.ReactElement {
   const project = useEditor((s) => s.project);
@@ -85,6 +86,8 @@ function ClipInspector({ clip }: { clip: Clip }) {
       )}
 
       <TransformSection clip={clip} tr={tr} setTransform={setTransform} />
+
+      {"keys" in clip.transform && <GraphEditor clip={clip} />}
 
       {clip.kind === "text" && (
         <div className="in-sec">

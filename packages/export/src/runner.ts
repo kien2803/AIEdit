@@ -12,8 +12,26 @@ export interface FFmpegRunner {
 /** Browser runner: ffmpeg.wasm (single-threaded core, no COOP/COEP needed). */
 export class WasmRunner implements FFmpegRunner {
   async run(plan: ExportPlan, files: ExportFiles, onProgress?: (frac: number) => void): Promise<Uint8Array> {
+    return this.runPhases(
+      [plan.argv],
+      files,
+      plan.outFile,
+      onProgress ? [onProgress] : undefined,
+    );
+  }
+
+  /**
+   * Run sequential ffmpeg phases. files maps runner-fs names to bytes;
+   * each argv is one exec() call. onProgress[i] gets that phase's progress.
+   */
+  async runPhases(
+    argvs: string[][],
+    files: ExportFiles,
+    outFile: string,
+    onProgress?: ((frac: number) => void)[],
+  ): Promise<Uint8Array> {
     const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-    const { toBlobURL, fetchFile } = await import("@ffmpeg/util");
+    const { toBlobURL } = await import("@ffmpeg/util");
     const ffmpeg = new FFmpeg();
     // Pinned single-threaded core (~25MB on first export, then cached).
     // NOTE: the Tauri shell should serve these from bundled local files instead.
@@ -22,15 +40,19 @@ export class WasmRunner implements FFmpegRunner {
       coreURL: await toBlobURL(`${CORE}/ffmpeg-core.js`, "text/javascript"),
       wasmURL: await toBlobURL(`${CORE}/ffmpeg-core.wasm`, "application/wasm"),
     });
-    ffmpeg.on("progress", ({ progress }) => onProgress?.(Math.max(0, Math.min(1, progress))));
+    let phase = 0;
+    ffmpeg.on("progress", ({ progress }) =>
+      onProgress?.[phase]?.(Math.max(0, Math.min(1, progress))));
     try {
-      for (const inp of plan.inputs) {
-        const data = files[inp.file];
-        if (!data) throw new Error(`missing input ${inp.file}`);
-        await ffmpeg.writeFile(inp.file, await fetchFile(new Blob([data as never])));
+      for (const [file, data] of Object.entries(files)) {
+        await ffmpeg.writeFile(file, data as never);
       }
-      await ffmpeg.exec(plan.argv);
-      const out = await ffmpeg.readFile(plan.outFile);
+      for (let i = 0; i < argvs.length; i++) {
+        phase = i;
+        const code = await ffmpeg.exec(argvs[i]!);
+        if (code !== 0) throw new Error(`ffmpeg phase ${i} exited ${code}`);
+      }
+      const out = await ffmpeg.readFile(outFile);
       return typeof out === "string" ? new TextEncoder().encode(out) : new Uint8Array(out);
     } finally {
       ffmpeg.terminate();

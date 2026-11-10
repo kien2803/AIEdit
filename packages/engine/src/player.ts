@@ -258,6 +258,27 @@ export class PreviewPlayer {
     return cnv;
   }
 
+  /**
+   * Wait until every live media element has finished seeking/has data —
+   * required for frame-accurate export (render→capture loops).
+   */
+  async waitForMediaReady(timeoutMs = 4000): Promise<void> {
+    const els = this.pool.allHandles().map((h) => h.el).filter((e): e is HTMLVideoElement => !!e);
+    await Promise.all(
+      els.map(
+        (el) =>
+          new Promise<void>((res) => {
+            const done = () => res();
+            if (!el.seeking && el.readyState >= 2 && !el.paused) return res();
+            if (!el.seeking && el.readyState >= 2 && el.paused) return res();
+            el.addEventListener("seeked", done, { once: true });
+            el.addEventListener("canplay", done, { once: true });
+            setTimeout(done, timeoutMs);
+          }),
+      ),
+    );
+  }
+
   dispose(): void {
     cancelAnimationFrame(this.raf);
     this.raf = 0;

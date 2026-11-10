@@ -65,7 +65,7 @@ export class Compositor {
   constructor(private canvas: HTMLCanvasElement, project: Project) {
     this.W = project.settings.width;
     this.H = project.settings.height;
-    const gl = canvas.getContext("webgl2", { premultipliedAlpha: false });
+    const gl = canvas.getContext("webgl2", { premultipliedAlpha: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error("WebGL2 unavailable");
     this.gl = gl;
 

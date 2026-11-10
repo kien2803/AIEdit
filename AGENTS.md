@@ -20,6 +20,10 @@ Timeline-based video editor foundation, built to become an AI-native editor late
   (browser, fetches pinned ffmpeg core from CDN — bundle locally under Tauri).
   Effect→ffmpeg mapping in `eqParams`/`audioChain` must stay in sync with the
   compositor's `EFFECT_REGISTRY`.
+- `packages/template` — template capture (selected clips → zero-based root +
+  inferred params/bindings/time-rules) and `instantiateTemplate` → Op[].
+  Elasticity rules ("stretch"/"fixed"/"fit") decide how segments react to new
+  footage duration. Library persists to localStorage (v1).
 - `apps/web` — Vite dev/build app. (Tauri desktop shell planned; the frontend
   is shell-agnostic.)
 
@@ -50,6 +54,9 @@ Timeline-based video editor foundation, built to become an AI-native editor late
   post pass; `transitions` = edge fades. Migration in `core/src/migrate.ts`.
 - `applyOps` validates/computes inverses against the evolving batch state —
   ops may depend on earlier ops in the same batch.
+- Export has two paths: filter-graph (pure footage) and frame-render
+  (`buildFramePlan`, compositor→mjpeg→ffmpeg) auto-selected when the timeline
+  contains SceneClip/AdjustmentClip.
 
 ## Shortcuts
 

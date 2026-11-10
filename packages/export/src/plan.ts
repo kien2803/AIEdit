@@ -114,22 +114,10 @@ export function buildExportPlan(
     }
   }
 
-  // --- audio clips (audio tracks + audio of video clips) ---
-  let audioJobs = 0;
-  for (const track of project.tracks) {
-    if (track.muted) continue;
-    for (const clip of track.clips) {
-      if (!clip.enabled || (clip.kind !== "video" && clip.kind !== "audio")) continue;
-      const asset = project.assets[clip.assetId];
-      if (!asset?.hasAudio) continue;
-      const idx = assetFile(clip.assetId);
-      audioJobs++;
-      const lbl = `a${audioJobs}`;
-      const chain = audioChain(clip, idx, lbl);
-      if (chain) filters.push(chain);
-      audioLabels.push(`[${lbl}]`);
-    }
-  }
+  // --- audio section (shared with frame-render path) ---
+  const audio = buildAudioSection(project, assetFile);
+  filters.push(...audio.filters);
+  audioLabels.push(...audio.labels);
 
   const argv: string[] = [];
   // inputs: media files then text PNGs (looped stills)
@@ -275,4 +263,122 @@ function audioChain(clip: VideoClip | AudioClip, inputIdx: number, outLbl: strin
   const delayMs = Math.round(ticks.toSeconds(clip.start) * 1000);
   if (delayMs > 0) f.push(`adelay=${delayMs}|${delayMs}`);
   return `[${inputIdx}:a]${f.join(",")}[${outLbl}]`;
+}
+
+
+// ---------------------------------------------------------------------------
+// Frame-render path: compositor renders every frame → piped to ffmpeg.
+// Used when the timeline contains things filter-graph can't express
+// (SceneClip, adjustment layers, future per-pixel effects).
+// ---------------------------------------------------------------------------
+
+interface AudioSection {
+  filters: string[];
+  labels: string[];
+}
+
+function buildAudioSection(
+  project: Project,
+  assetFile: (assetId: string) => number,
+): AudioSection {
+  const filters: string[] = [];
+  const labels: string[] = [];
+  let jobs = 0;
+  for (const track of project.tracks) {
+    if (track.muted) continue;
+    for (const clip of track.clips) {
+      if (!clip.enabled || (clip.kind !== "video" && clip.kind !== "audio")) continue;
+      const asset = project.assets[clip.assetId];
+      if (!asset?.hasAudio) continue;
+      const idx = assetFile(clip.assetId);
+      jobs++;
+      const lbl = `a${jobs}`;
+      const chain = audioChain(clip, idx, lbl);
+      if (chain) filters.push(chain);
+      labels.push(`[${lbl}]`);
+    }
+  }
+  return { filters, labels };
+}
+
+export interface FrameRenderPlan {
+  width: number;
+  height: number;
+  fps: number;
+  durationSec: number;
+  frameCount: number;
+  /** Media asset inputs needed by the audio pass (same naming as inputs). */
+  inputs: ExportPlanInput[];
+  /** phase A: mjpeg stream → silent video.mp4 */
+  videoArgv: string[];
+  /** phase B: media inputs + audio filter → audio.m4a (null = no audio) */
+  audioArgv: string[] | null;
+  /** phase C: mux */
+  muxArgv: string[];
+  outFile: string;
+}
+
+export function buildFramePlan(project: Project, options: ExportOptions = {}): FrameRenderPlan {
+  const { width: W, height: H } = project.settings;
+  const fpsF = project.settings.fps.num / project.settings.fps.den;
+  const end = project.tracks
+    .flatMap((t) => t.clips)
+    .reduce((m, c) => Math.max(m, clipEnd(c)), 0 as TimeTicks);
+  const durationSec = ticks.toSeconds(end);
+  if (durationSec <= 0) throw new Error("nothing to export");
+  const vCodec = options.videoCodecArgs ?? ["libx264", "-preset", "veryfast", "-crf", "20"];
+
+  const inputs: ExportPlanInput[] = [];
+  const inputIndexOf = new Map<string, number>();
+  const assetFile = (assetId: string): number => {
+    const e = inputIndexOf.get(assetId);
+    if (e !== undefined) return e;
+    const idx = inputs.length;
+    inputs.push({ file: `in${idx}.mp4`, assetId });
+    inputIndexOf.set(assetId, idx);
+    return idx;
+  };
+
+  const audio = buildAudioSection(project, assetFile);
+  const filters: string[] = [...audio.filters];
+
+  const inputArgs: string[] = [];
+  for (const inp of inputs) inputArgs.push("-i", inp.file);
+
+  // phase A: concatenated JPEG frames (image2pipe mjpeg) → silent mp4
+  const videoArgv = [
+    "-f", "image2pipe", "-c:v", "mjpeg", "-r", String(fpsF), "-i", "frames.mjpeg",
+    "-c:v", ...vCodec, "-pix_fmt", "yuv420p", "-r", String(fpsF),
+    "-t", String(durationSec), "-y", "video.mp4",
+  ];
+
+  // phase B: audio-only → audio.m4a
+  let audioArgv: string[] | null = null;
+  if (audio.labels.length > 0) {
+    if (audio.labels.length === 1) {
+      filters.push(`${audio.labels[0]}aresample=48000[aout]`);
+    } else {
+      filters.push(`${audio.labels.join("")}amix=inputs=${audio.labels.length}:normalize=0,aresample=48000[aout]`);
+    }
+    audioArgv = [
+      ...inputArgs,
+      "-filter_complex", filters.join(";"),
+      "-map", "[aout]", "-c:a", "aac", "-b:a", "192k",
+      "-t", String(durationSec), "-y", "audio.m4a",
+    ];
+  }
+
+  // phase C: mux
+  const muxArgv = audioArgv
+    ? ["-i", "video.mp4", "-i", "audio.m4a", "-c:v", "copy", "-c:a", "aac",
+       "-t", String(durationSec), "-movflags", "+faststart", "-y", "out.mp4"]
+    : ["-i", "video.mp4", "-c:v", "copy",
+       "-t", String(durationSec), "-movflags", "+faststart", "-y", "out.mp4"];
+
+  return {
+    width: W, height: H, fps: fpsF, durationSec,
+    frameCount: Math.max(1, Math.ceil(durationSec * fpsF)),
+    inputs, videoArgv, audioArgv, muxArgv,
+    outFile: "out.mp4",
+  };
 }
