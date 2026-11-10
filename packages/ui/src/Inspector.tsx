@@ -261,7 +261,7 @@ function SceneSection({ clipId, sceneId }: { clipId: string; sceneId: string }) 
 function ElementInspector({ sceneId, el }: { sceneId: string; el: SceneElement }) {
   const dispatch = useEditor((s) => s.dispatch);
   const tr = staticOf(el.transform);
-  const set = (patch: Parameters<typeof dispatch>[0] extends never[] ? never : import("@aiedit/core").ElementPatch) =>
+  const set = (patch: import("@aiedit/core").ElementPatch) =>
     dispatch([{ type: "element.set", sceneId, elementId: el.id, patch }], "edit element");
   return (
     <div style={{ marginTop: 8 }}>

@@ -43,8 +43,9 @@ export class Dispatcher {
 
   dispatch(ops: Op[], label: string, ctx: Partial<EditContext> = {}): OpBatch {
     const context = defaultContext({ sessionId: this.sessionId, ...ctx });
-    const { next, inverse } = applyOps(this._project, ops);
-    const batch: OpBatch = { ops, inverse, context, label };
+    const { next, inverse, resolved } = applyOps(this._project, ops);
+    // store RESOLVED ops: replaying a redo must reuse generated ids (e.g. split)
+    const batch: OpBatch = { ops: resolved, inverse, context, label };
     this._project = next;
     this._undo.push(batch);
     this._redo = [];

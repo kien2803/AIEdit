@@ -305,3 +305,19 @@ describe("model v2: keyframes, scenes, timeRemap", () => {
     ])).toThrow();
   });
 });
+
+describe("redo stability", () => {
+  it("redo of a split reuses the same generated clip id", async () => {
+    const { makeVideoClip } = await import("../src/index.js");
+    const { p, trackId } = fixtureProject();
+    const d = new Dispatcher(p);
+    d.dispatch([{ type: "clip.add", trackId, clip: makeVideoClip({ id: "c1", assetId: "asset1", start: 0, sourceIn: 0, sourceOut: sec(5) }) }], "add");
+    d.dispatch([{ type: "clip.split", clipId: "c1", at: sec(2) }], "split");
+    const rightId = d.project.tracks[0]!.clips[1]!.id;
+    d.undo();
+    expect(d.project.tracks[0]!.clips).toHaveLength(1);
+    d.redo();
+    expect(d.project.tracks[0]!.clips).toHaveLength(2);
+    expect(d.project.tracks[0]!.clips[1]!.id).toBe(rightId); // stable, not regenerated
+  });
+});

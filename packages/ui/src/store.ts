@@ -1,9 +1,9 @@
 import { create } from "zustand";
-import type { AnalysisTrack, ClipId, Clip, MediaAsset, Op, Project, TimeTicks, Track } from "@aiedit/core";
+import type { AnalysisTrack, ClipId, MediaAsset, Op, Project, TimeTicks } from "@aiedit/core";
 import {
   createProject, createTrack, deserializeProject, Dispatcher,
   exportSessionLog, makeAudioClip, makeVideoClip, makeTextClip,
-  makeScene, makeSceneClip, makeShapeElement, makeSceneTextElement,
+  findClip, makeScene, makeSceneClip, makeShapeElement, makeSceneTextElement,
   makeAdjustmentClip, newId, resolvePlacement, rippleDeleteOps, sec, serializeProject,
   timelineEnd, ticks,
 } from "@aiedit/core";
@@ -252,7 +252,7 @@ export const useEditor = create<EditorState>((set, get) => {
      */
     cutSilences: (clipId) => {
       const s = get();
-      const loc = findClipInProject(s.project, clipId);
+      const loc = findClip(s.project, clipId);
       if (!loc) return;
       const clip = loc.clip;
       if (clip.kind !== "video" && clip.kind !== "audio") return;
@@ -529,9 +529,11 @@ async function exportFrameRender(
 
   // offscreen player — DOM elements still work (media pool needs DOM)
   const cnv = document.createElement("canvas");
+  const dpr = window.devicePixelRatio || 1;
   cnv.width = plan.width;
   cnv.height = plan.height;
-  cnv.style.cssText = `position:fixed;left:-9999px;top:0;width:${plan.width}px;height:${plan.height}px`;
+  // CSS size / dpr so the backing store stays exactly plan.width×plan.height
+  cnv.style.cssText = `position:fixed;left:-9999px;top:0;width:${plan.width / dpr}px;height:${plan.height / dpr}px`;
   document.body.appendChild(cnv);
   const player = new PreviewPlayer(cnv, project);
   try {
@@ -599,14 +601,6 @@ function persistTemplates(templates: Template[]): void {
   } catch { /* quota */ }
 }
 
-
-function findClipInProject(p: Project, clipId: ClipId): { track: Track; clip: Clip } | undefined {
-  for (const t of p.tracks) {
-    const c = t.clips.find((c) => c.id === clipId);
-    if (c) return { track: t, clip: c };
-  }
-  return undefined;
-}
 
 /** peaks (0..1) → silence segments in source ticks. Threshold ~ -28dBFS. */
 function detectSilence(peaks: number[], durationTicks: TimeTicks | undefined): AnalysisTrack["segments"] {

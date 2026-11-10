@@ -557,7 +557,7 @@ function snapshot<T>(v: T): T {
  * Apply a user-intent batch of ops. Returns next project + inverse ops (for undo).
  * Ops in a batch apply in order; inverse ops are stored in reverse order.
  */
-export function applyOps(project: Project, ops: Op[]): { next: Project; inverse: Op[] } {
+export function applyOps(project: Project, ops: Op[]): { next: Project; inverse: Op[]; resolved: Op[] } {
   // Fill in generated split ids up-front so inverses can reference them.
   const resolved = ops.map((op) =>
     op.type === "clip.split" && !op.newClipId ? { ...op, newClipId: newId("clip") } : op,
@@ -581,7 +581,7 @@ export function applyOps(project: Project, ops: Op[]): { next: Project; inverse:
       inverse.push(io);
     }
   }
-  return { next: cur, inverse };
+  return { next: cur, inverse, resolved };
 }
 
 /** Apply inverse/undo ops (already computed). Does not produce new inverses. */
