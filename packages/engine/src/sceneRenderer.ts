@@ -62,9 +62,45 @@ export class CanvasSceneRenderer implements SceneRenderer {
       case "text": {
         ctx2d.fillStyle = el.style.color;
         ctx2d.font = `${el.style.fontSize}px ${el.style.fontFamily}`;
-        ctx2d.textAlign = el.style.align;
         ctx2d.textBaseline = "middle";
-        ctx2d.fillText(el.content, 0, 0);
+        if (!el.animators?.length) {
+          ctx2d.textAlign = el.style.align;
+          ctx2d.fillText(el.content, 0, 0);
+        } else {
+          // per-char animators: chars fade/slide in over [range0, range1] of element duration
+          const chars = [...el.content];
+          const n = chars.length;
+          ctx2d.textAlign = "center";
+          const widths = chars.map((c) => ctx2d.measureText(c).width);
+          const total = widths.reduce((a, b) => a + b, 0);
+          let cx = el.style.align === "center" ? -total / 2 : el.style.align === "right" ? -total : 0;
+          const dur = Math.max(1, el.end - el.start);
+          const nt = local / dur;
+          for (let i = 0; i < n; i++) {
+            let alpha = 1, dx = 0, dy = 0, rot = 0, sc = 1;
+            for (const an of el.animators) {
+              const units = an.selector === "chars" ? n : el.content.split(/\s+/).length;
+              const u = units <= 1 ? 0 : i / (units - 1);
+              const span = (an.range[1] - an.range[0]) || 1e-6;
+              const p = Math.max(0, Math.min(1, (nt - (an.range[0] + u * span * 0.75)) / (span * 0.25)));
+              if (an.animate.opacity !== undefined) alpha *= Math.min(alpha, p + an.animate.opacity * (1 - p));
+              else alpha *= p;
+              if (an.animate.y !== undefined) dy += an.animate.y * (1 - p);
+              if (an.animate.x !== undefined) dx += an.animate.x * (1 - p);
+              if (an.animate.rotation !== undefined) rot += an.animate.rotation * (1 - p);
+              if (an.animate.scaleX !== undefined) sc *= 1 + (an.animate.scaleX - 1) * (1 - p);
+            }
+            const cw = widths[i]!;
+            ctx2d.save();
+            ctx2d.globalAlpha *= alpha;
+            ctx2d.translate(cx + cw / 2 + dx, dy);
+            ctx2d.rotate(rot);
+            ctx2d.scale(sc, sc);
+            ctx2d.fillText(chars[i]!, 0, 0);
+            ctx2d.restore();
+            cx += cw;
+          }
+        }
         break;
       }
       case "footage": {

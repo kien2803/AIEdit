@@ -17,6 +17,7 @@ import { newId } from "./id.js";
 export type Op =
   | { type: "asset.add"; asset: MediaAsset }
   | { type: "asset.remove"; assetId: string }
+  | { type: "asset.set"; assetId: string; patch: AssetPatch }
   | { type: "track.add"; track: Track }
   | { type: "track.remove"; trackId: TrackId }
   | { type: "track.set"; trackId: TrackId; patch: Partial<Pick<Track, "name" | "muted" | "locked">> }
@@ -43,6 +44,12 @@ export type Op =
   | { type: "key.remove"; clipId: ClipId; field: "transform"; at: TimeTicks }
   /** Convert a field between static and keyframed. */
   | { type: "key.toggle"; clipId: ClipId; field: "transform"; keyframed: boolean };
+
+export interface AssetPatch {
+  name?: string;
+  analysis?: MediaAsset["analysis"];
+  proxyUrl?: string;
+}
 
 export interface ElementPatch {
   name?: string;
@@ -161,6 +168,11 @@ function applyOne(d: Draft<Project>, op: Op): void {
     case "asset.remove":
       delete d.assets[op.assetId];
       break;
+    case "asset.set": {
+      const a = d.assets[op.assetId];
+      if (a) Object.assign(a, op.patch);
+      break;
+    }
     case "track.add":
       d.tracks.push(op.track);
       break;
@@ -378,6 +390,17 @@ function inverseOf(p: Project, op: Op): Op[] {
     case "asset.remove": {
       const a = p.assets[op.assetId];
       return a ? [{ type: "asset.add", asset: snapshot(a) }] : [];
+    }
+    case "asset.set": {
+      const a = p.assets[op.assetId];
+      if (!a) return [];
+      const patch: AssetPatch = {};
+      const rec = a as unknown as Record<string, unknown>;
+      for (const k of Object.keys(op.patch) as (keyof AssetPatch)[]) {
+        const v = rec[k];
+        if (v !== undefined) (patch as Record<string, unknown>)[k] = v;
+      }
+      return [{ type: "asset.set", assetId: op.assetId, patch }];
     }
     case "track.add":
       return [{ type: "track.remove", trackId: op.track.id }];

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ClipId, MediaAsset, Op, Project, TimeTicks } from "@aiedit/core";
+import type { AnalysisTrack, ClipId, Clip, MediaAsset, Op, Project, TimeTicks, Track } from "@aiedit/core";
 import {
   createProject, createTrack, deserializeProject, Dispatcher,
   exportSessionLog, makeAudioClip, makeVideoClip, makeTextClip,
@@ -48,6 +48,7 @@ interface EditorState {
   addAdjustmentClip(): void;
   splitAtPlayhead(): void;
   deleteSelected(ripple?: boolean): void;
+  cutSilences(clipId: ClipId): void;
   newProject(): void;
   saveTemplate(name: string): void;
   applyTemplate(id: string, values: ParamValues): void;
@@ -119,9 +120,17 @@ export const useEditor = create<EditorState>((set, get) => {
           ...(meta.height !== undefined ? { height: meta.height } : {}),
         };
         get().dispatch([{ type: "asset.add", asset }], `import ${file.name}`);
-        // decode audio peaks in background — feeds waveform + later analysis
+        // decode audio peaks in background — feeds waveform + silence analysis
         void computePeaks(url).then((pk) => {
-          if (pk) set({ peaks: { ...get().peaks, [asset.id]: pk } });
+          if (!pk) return;
+          set({ peaks: { ...get().peaks, [asset.id]: pk } });
+          const silence = detectSilence(pk, asset.durationTicks);
+          if (silence.length) {
+            get().dispatch([{
+              type: "asset.set", assetId: asset.id,
+              patch: { analysis: [{ kind: "silence", segments: silence }] },
+            }], "detect silence");
+          }
         }).catch(() => {});
       }
     },
@@ -235,6 +244,66 @@ export const useEditor = create<EditorState>((set, get) => {
       ops.push({ type: "clip.add", trackId: track.id, clip });
       s.dispatch(ops, "drop media");
       set({ selection: [clip.id] });
+    },
+
+    /**
+     * First rule-based "proposal": cut a clip's silent ranges and ripple the
+     * remainder closed — one semantic batch, fully logged like any human edit.
+     */
+    cutSilences: (clipId) => {
+      const s = get();
+      const loc = findClipInProject(s.project, clipId);
+      if (!loc) return;
+      const clip = loc.clip;
+      if (clip.kind !== "video" && clip.kind !== "audio") return;
+      const asset = s.project.assets[clip.assetId];
+      const silence = asset?.analysis?.find((a) => a.kind === "silence");
+      if (!silence || clip.speed <= 0) return;
+
+      const sp = clip.speed;
+      // silence ranges overlapping [sourceIn, sourceOut] → timeline coords
+      const segs = silence.segments
+        .filter((g) => g.end > clip.sourceIn && g.start < clip.sourceOut)
+        .map((g) => ({
+          tl0: clip.start + Math.max(0, Math.round((g.start - clip.sourceIn) / sp)),
+          tl1: clip.start + Math.max(0, Math.round((g.end - clip.sourceIn) / sp)),
+        }))
+        .filter((g) => g.tl1 > clip.start && g.tl0 < clip.start + clip.duration)
+        .sort((a, b) => a.tl0 - b.tl0);
+      if (!segs.length) return;
+
+      // kept parts = complement of silence within the clip
+      const kept: { start: TimeTicks; end: TimeTicks }[] = [];
+      let cur = clip.start;
+      const clipEndT = clip.start + clip.duration;
+      for (const g of segs) {
+        if (g.tl0 > cur) kept.push({ start: cur, end: Math.min(g.tl0, clipEndT) });
+        cur = Math.max(cur, g.tl1);
+      }
+      if (cur < clipEndT) kept.push({ start: cur, end: clipEndT });
+      if (!kept.length || kept.length === 1 && kept[0]!.start === clip.start && kept[0]!.end === clipEndT) return;
+
+      const removed = clip.duration - kept.reduce((n, k) => n + (k.end - k.start), 0);
+      const ops: Op[] = [{ type: "clip.remove", clipId }];
+      let place = clip.start;
+      for (const k of kept) {
+        const nc = JSON.parse(JSON.stringify(clip)) as typeof clip;
+        nc.id = newId("clip");
+        nc.start = place;
+        nc.duration = k.end - k.start;
+        nc.sourceIn = clip.sourceIn + Math.round((k.start - clip.start) * sp);
+        nc.sourceOut = clip.sourceIn + Math.round((k.end - clip.start) * sp);
+        ops.push({ type: "clip.add", trackId: loc.track.id, clip: nc });
+        place += nc.duration;
+      }
+      // ripple: shift subsequent clips on the same track
+      for (const c of loc.track.clips) {
+        if (c.id !== clipId && c.start >= clip.start + clip.duration) {
+          ops.push({ type: "clip.move", clipId: c.id, start: c.start - removed });
+        }
+      }
+      s.dispatch(ops, "cut silences");
+      set({ selection: [] });
     },
 
     deleteSelected: (ripple = false) => {
@@ -528,4 +597,39 @@ function persistTemplates(templates: Template[]): void {
   try {
     localStorage.setItem(TPL_KEY, JSON.stringify(templates.map((t) => serializeTemplate(t))));
   } catch { /* quota */ }
+}
+
+
+function findClipInProject(p: Project, clipId: ClipId): { track: Track; clip: Clip } | undefined {
+  for (const t of p.tracks) {
+    const c = t.clips.find((c) => c.id === clipId);
+    if (c) return { track: t, clip: c };
+  }
+  return undefined;
+}
+
+/** peaks (0..1) → silence segments in source ticks. Threshold ~ -28dBFS. */
+function detectSilence(peaks: number[], durationTicks: TimeTicks | undefined): AnalysisTrack["segments"] {
+  if (!durationTicks) return [];
+  const dur: TimeTicks = durationTicks;
+  const THRESH = 0.035;
+  const MIN_SEC = 0.4;
+  const n = peaks.length;
+  const out: AnalysisTrack["segments"] = [];
+  let runStart = -1;
+  for (let i = 0; i < n; i++) {
+    if (peaks[i]! < THRESH) {
+      if (runStart < 0) runStart = i;
+    } else if (runStart >= 0) {
+      push(i);
+      runStart = -1;
+    }
+  }
+  if (runStart >= 0) push(n);
+  function push(endIdx: number): void {
+    const s = Math.round((runStart / n) * dur);
+    const e = Math.round((endIdx / n) * dur);
+    if ((e - s) / 90_000 >= MIN_SEC) out.push({ start: s, end: e, score: 1 });
+  }
+  return out;
 }

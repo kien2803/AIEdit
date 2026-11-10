@@ -111,6 +111,28 @@ export function instantiateTemplate(
             clip.sourceOut = dur;
             clip.speed = dur / tClip.duration; // squeeze/stretch footage into slot
             clip.duration = tClip.duration;
+          } else if (rule === "loop") {
+            clip.sourceOut = dur;
+            clip.duration = tClip.duration;
+            if (dur < tClip.duration) {
+              warnings.push(`"${fp}": footage ${(dur / 90_000).toFixed(1)}s shorter than loop slot — slot trimmed`);
+              clip.duration = dur;
+              shift += clip.duration - tClip.duration;
+            }
+            // NOTE: real looping repeats the source — needs clip.repeatCount in a later model version
+          } else if (rule === "freeze") {
+            // hold a single source frame across the slot, via timeRemap
+            const frz = ruleOf.get(tClip.id) as { kind: "freeze"; at: "in" | "out" };
+            const freezeAt = frz.at === "out" ? dur - 1 : 0;
+            clip.sourceIn = freezeAt;
+            clip.sourceOut = freezeAt + 1;
+            clip.duration = tClip.duration;
+            clip.timeRemap = {
+              keys: [
+                { at: 0, value: freezeAt, ease: { kind: "linear" } },
+                { at: tClip.duration, value: freezeAt + 1, ease: { kind: "linear" } },
+              ],
+            };
           } else {
             clip.sourceOut = Math.min(dur, tClip.duration);
             clip.duration = Math.min(dur, tClip.duration);

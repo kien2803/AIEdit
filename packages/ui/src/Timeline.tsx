@@ -27,6 +27,7 @@ export function Timeline(): React.ReactElement {
   const addTextClip = useEditor((s) => s.addTextClip);
   const addSceneClip = useEditor((s) => s.addSceneClip);
   const addAdjustmentClip = useEditor((s) => s.addAdjustmentClip);
+  const cutSilences = useEditor((s) => s.cutSilences);
   const dropOnTimeline = useEditor((s) => s.dropOnTimeline);
   const peaks = useEditor((s) => s.peaks);
 
@@ -58,7 +59,21 @@ export function Timeline(): React.ReactElement {
 
   const snapTargets = useMemo(() => {
     const ts = new Set<TimeTicks>([playhead, 0]);
-    for (const tr of project.tracks) for (const c of tr.clips) { ts.add(c.start); ts.add(clipEnd(c)); }
+    for (const tr of project.tracks) {
+      for (const c of tr.clips) {
+        ts.add(c.start); ts.add(clipEnd(c));
+        // analysis edges (silence) become snap targets, mapped through clip speed
+        if ((c.kind === "video" || c.kind === "audio") && c.speed > 0) {
+          const sil = project.assets[c.assetId]?.analysis?.find((a) => a.kind === "silence");
+          for (const g of sil?.segments ?? []) {
+            const t0 = c.start + Math.round((g.start - c.sourceIn) / c.speed);
+            const t1 = c.start + Math.round((g.end - c.sourceIn) / c.speed);
+            if (t0 > c.start && t0 < clipEnd(c)) ts.add(t0);
+            if (t1 > c.start && t1 < clipEnd(c)) ts.add(t1);
+          }
+        }
+      }
+    }
     return ts;
   }, [project, playhead]);
 
@@ -199,6 +214,11 @@ export function Timeline(): React.ReactElement {
         <button onClick={addTextClip} title="Add text (T)">T</button>
         <button onClick={addSceneClip} title="Add scene (motion graphics)">⬒ Scene</button>
         <button onClick={addAdjustmentClip} title="Add adjustment layer">Adj</button>
+        <button
+          onClick={() => selection.length === 1 && cutSilences(selection[0]!)}
+          disabled={selection.length !== 1}
+          title="Cut silent ranges + ripple (silence detected on import)"
+        >Cut sil</button>
         <span className="tl-zoom">
           <button onClick={() => setZoom(pxPerSec / 1.4)}>−</button>
           <button onClick={() => setZoom(pxPerSec * 1.4)}>+</button>
@@ -271,6 +291,9 @@ export function Timeline(): React.ReactElement {
                           clip={clip}
                         />
                       )}
+                      {silenceBands(clip, project).map((b, i) => (
+                        <i key={`s${i}`} className="tl-silence" style={{ left: `${b.x * 100}%`, width: `${b.w * 100}%` }} />
+                      ))}
                       {"keys" in clip.transform && clip.transform.keys.map((k) => (
                         <i
                           key={k.at}
@@ -326,4 +349,21 @@ function ClipWave({ peaks, clip }: { peaks: number[]; clip: Clip }): React.React
     }
   });
   return <canvas ref={ref} className="tl-wave" />;
+}
+
+
+/** Silence ranges as fractions of the clip box (source-time → clip-local). */
+function silenceBands(clip: Clip, project: { assets: Record<string, { analysis?: { kind: string; segments: { start: TimeTicks; end: TimeTicks; score: number }[] }[] }> }): { x: number; w: number }[] {
+  if (clip.kind !== "video" && clip.kind !== "audio" || clip.speed <= 0) return [];
+  const sil = project.assets[clip.assetId]?.analysis?.find((a) => a.kind === "silence");
+  if (!sil) return [];
+  const out: { x: number; w: number }[] = [];
+  for (const g of sil.segments) {
+    const s = (g.start - clip.sourceIn) / clip.speed;
+    const e = (g.end - clip.sourceIn) / clip.speed;
+    const x0 = Math.max(0, s / clip.duration);
+    const x1 = Math.min(1, e / clip.duration);
+    if (x1 > x0) out.push({ x: x0, w: x1 - x0 });
+  }
+  return out;
 }
