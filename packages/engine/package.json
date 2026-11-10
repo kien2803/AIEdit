@@ -1,0 +1,16 @@
+{
+  "name": "@aiedit/engine",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aiedit/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.2"
+  }
+}
