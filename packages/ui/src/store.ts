@@ -26,6 +26,9 @@ interface EditorState {
   /** 0..1 while exporting, null when idle. */
   exportProgress: number | null;
   templates: Template[];
+  /** LLM settings (localStorage). Empty apiKey = rule-based parser. */
+  llm: { baseURL: string; model: string; apiKey: string };
+  setLLM(v: { baseURL: string; model: string; apiKey: string }): void;
 
   setPlayer(p: PreviewPlayer | null): void;
   dispatch(ops: Op[], label: string): void;
@@ -78,6 +81,11 @@ export const useEditor = create<EditorState>((set, get) => {
     peaks: {},
     exportProgress: null,
     templates: loadTemplates(),
+    llm: loadLLM(),
+    setLLM: (v) => {
+      set({ llm: v });
+      try { localStorage.setItem("aiedit.llm.v1", JSON.stringify(v)); } catch { /* */ }
+    },
 
     setPlayer: (player) => set({ player }),
 
@@ -688,4 +696,12 @@ function detectSilence(peaks: number[], durationTicks: TimeTicks | undefined): A
     if ((e - s) / 90_000 >= MIN_SEC) out.push({ start: s, end: e, score: 1 });
   }
   return out;
+}
+
+function loadLLM(): { baseURL: string; model: string; apiKey: string } {
+  try {
+    return JSON.parse(localStorage.getItem("aiedit.llm.v1") ?? "") as never;
+  } catch {
+    return { baseURL: "https://api.openai.com", model: "gpt-4o-mini", apiKey: "" };
+  }
 }
