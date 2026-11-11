@@ -535,7 +535,18 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     exportSession: () => {
-      const blob = new Blob([exportSessionLog(get().dispatcher.log)], { type: "application/jsonl" });
+      const s = get();
+      // corpus format: first line = session.start (initial project snapshot),
+      // then one OpBatch per line, then session events (proposal accept/reject)
+      const head = JSON.stringify({
+        type: "session.start",
+        sessionId: s.dispatcher.sessionId,
+        at: Date.now(),
+        project: s.project,
+      });
+      const body = exportSessionLog(s.dispatcher.log);
+      const events = s.sessionEvents.map((e) => JSON.stringify({ ...e, type: `session.${e.type}` })).join("\n");
+      const blob = new Blob([[head, body, events].filter(Boolean).join("\n")], { type: "application/jsonl" });
       downloadBlob(blob, `session-${Date.now()}.jsonl`);
     },
 
