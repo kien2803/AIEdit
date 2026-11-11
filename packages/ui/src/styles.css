@@ -147,3 +147,4 @@ textarea { width: 100%; min-height: 48px; resize: vertical; }
 .sd-dialog h3 { margin: 0 0 8px; }
 .sd-note { color: var(--dim); font-size: 12px; }
 .aspect-sel { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+.pv-err { position: absolute; inset: 0; display: grid; place-items: center; color: #ff8080; background: rgba(0,0,0,0.7); font: 13px monospace; padding: 20px; text-align: center; }

@@ -14,12 +14,18 @@ export function Preview(): React.ReactElement {
   const togglePlay = useEditor((s) => s.togglePlay);
   const player = useEditor((s) => s.player);
 
+  const [engineErr, setEngineErr] = React.useState<string | null>(null);
   useEffect(() => {
-    const p = new PreviewPlayer(canvasRef.current!, useEditor.getState().project);
-    playerRef.current = p;
-    setPlayer(p);
-    const off = p.onTick((t) => useEditor.setState({ playhead: t }));
-    return () => { off(); p.dispose(); setPlayer(null); };
+    try {
+      const p = new PreviewPlayer(canvasRef.current!, useEditor.getState().project);
+      playerRef.current = p;
+      setPlayer(p);
+      const off = p.onTick((t) => useEditor.setState({ playhead: t }));
+      return () => { off(); p.dispose(); setPlayer(null); };
+    } catch (e) {
+      setEngineErr(e instanceof Error ? e.message : String(e));
+      return undefined;
+    }
   }, [setPlayer]);
 
   useEffect(() => { playerRef.current?.setProject(project); }, [project]);
@@ -30,6 +36,7 @@ export function Preview(): React.ReactElement {
     <div className="pv-root">
       <div className="pv-stage">
         <canvas ref={canvasRef} className="pv-canvas" />
+        {engineErr && <div className="pv-err">Preview engine: {engineErr}</div>}
         <SceneOverlay />
       </div>
       <div className="pv-transport">
