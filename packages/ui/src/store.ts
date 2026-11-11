@@ -25,6 +25,10 @@ interface EditorState {
   peaks: Record<string, number[]>;
   /** 0..1 while exporting, null when idle. */
   exportProgress: number | null;
+  /** Pending AI/rule-based proposals awaiting review. */
+  proposals: Proposal[];
+  /** Session-level events (proposal shown/accepted/rejected) → corpus. */
+  sessionEvents: SessionEvent[];
   templates: Template[];
   /** LLM settings (localStorage). Empty apiKey = rule-based parser. */
   llm: { baseURL: string; model: string; apiKey: string };
@@ -62,6 +66,10 @@ interface EditorState {
   newProject(): void;
   saveTemplate(name: string): void;
   applyTemplate(id: string, values: ParamValues): void;
+  proposeOps(ops: Op[], rationale: string, label: string): string;
+  acceptProposal(id: string): void;
+  rejectProposal(id: string): void;
+  proposeSilenceCuts(clipId: ClipId): void;
   deleteTemplate(id: string): void;
   saveProject(): void;
   loadProject(file: File): Promise<void>;
@@ -89,6 +97,8 @@ export const useEditor = create<EditorState>((set, get) => {
     peaks: {},
     exportProgress: null,
     templates: loadTemplates(),
+    proposals: [],
+    sessionEvents: [],
     llm: loadLLM(),
     setLLM: (v) => {
       set({ llm: v });
@@ -381,11 +391,40 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selection: [clip.id] });
     },
 
-    /**
-     * First rule-based "proposal": cut a clip's silent ranges and ripple the
-     * remainder closed — one semantic batch, fully logged like any human edit.
-     */
-    cutSilences: (clipId) => {
+    proposeOps: (ops, rationale, label) => {
+      const id = newId("prop");
+      const proposals = [...get().proposals, { id, label, ops, rationale }];
+      const sessionEvents = [...get().sessionEvents, { type: "proposal.shown" as const, id, label, at: Date.now() }];
+      set({ proposals, sessionEvents });
+      return id;
+    },
+
+    acceptProposal: (id) => {
+      const s = get();
+      const p = s.proposals.find((x) => x.id === id);
+      if (!p) return;
+      s.dispatch(p.ops, `proposal:${p.label}`);
+      set({
+        proposals: s.proposals.filter((x) => x.id !== id),
+        sessionEvents: [...s.sessionEvents, { type: "proposal.accepted", id, label: p.label, opCount: p.ops.length, at: Date.now() }],
+      });
+    },
+
+    rejectProposal: (id) => {
+      const s = get();
+      const p = s.proposals.find((x) => x.id === id);
+      if (!p) return;
+      set({
+        proposals: s.proposals.filter((x) => x.id !== id),
+        sessionEvents: [...s.sessionEvents, { type: "proposal.rejected", id, label: p.label, at: Date.now() }],
+      });
+    },
+
+    /** Legacy alias → now routes through the proposal review flow. */
+    cutSilences: (clipId) => get().proposeSilenceCuts(clipId),
+
+    /** Rule-based proposal: cut silent ranges + ripple, presented for review. */
+    proposeSilenceCuts: (clipId) => {
       const s = get();
       const loc = findClip(s.project, clipId);
       if (!loc) return;
@@ -437,8 +476,11 @@ export const useEditor = create<EditorState>((set, get) => {
           ops.push({ type: "clip.move", clipId: c.id, start: c.start - removed });
         }
       }
-      s.dispatch(ops, "cut silences");
-      set({ selection: [] });
+      s.proposeOps(
+        ops,
+        `Remove ${segs.length} silent range(s), ripple ${(removed / 90_000).toFixed(1)}s closed`,
+        "cut silences",
+      );
     },
 
     deleteSelected: (ripple = false) => {
@@ -769,4 +811,19 @@ function loadLLM(): { baseURL: string; model: string; apiKey: string } {
   } catch {
     return { baseURL: "https://api.openai.com", model: "gpt-4o-mini", apiKey: "" };
   }
+}
+
+export interface Proposal {
+  id: string;
+  label: string;
+  ops: Op[];
+  rationale: string;
+}
+
+export interface SessionEvent {
+  type: "proposal.shown" | "proposal.accepted" | "proposal.rejected";
+  id: string;
+  label: string;
+  opCount?: number;
+  at: number;
 }

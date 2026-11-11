@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { ChatPanel, ErrorBoundary, Inspector, MediaBin, Preview, SettingsDialog, Timeline, useEditor } from "@aiedit/ui";
+import { ChatPanel, ErrorBoundary, Inspector, MediaBin, Preview, ProposalsBar, SettingsDialog, Timeline, useEditor } from "@aiedit/ui";
 
 function RightPanel(): React.ReactElement {
   const [tab, setTab] = React.useState<"inspector" | "chat">("inspector");
@@ -94,7 +94,7 @@ export function App(): React.ReactElement {
       <div className="app-bin"><MediaBin /></div>
       <div className="app-preview"><Preview /></div>
       <div className="app-inspector"><RightPanel /></div>
-      <div className="app-timeline"><Timeline /></div>
+      <div className="app-timeline"><ProposalsBar /><Timeline /></div>
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </div>
     </ErrorBoundary>
