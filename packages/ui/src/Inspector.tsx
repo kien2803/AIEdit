@@ -82,6 +82,10 @@ function ClipInspector({ clip }: { clip: Clip }) {
             onChange={(v) => v !== 0 && dispatch([{ type: "clip.setSpeed", clipId: clip.id, speed: v }], "set speed")} />
           <Slider label="Gain" value={clip.gain} max={2}
             onChange={(v) => dispatch([{ type: "clip.set", clipId: clip.id, patch: { gain: v } }], "set gain")} />
+          <Slider label="Fade in" value={ticks.toSeconds(clip.fadeIn ?? 0)} max={5} step={0.1}
+            onChange={(v) => dispatch([{ type: "clip.set", clipId: clip.id, patch: { fadeIn: ticks.fromSeconds(v) } }], "fade in")} />
+          <Slider label="Fade out" value={ticks.toSeconds(clip.fadeOut ?? 0)} max={5} step={0.1}
+            onChange={(v) => dispatch([{ type: "clip.set", clipId: clip.id, patch: { fadeOut: ticks.fromSeconds(v) } }], "fade out")} />
         </div>
       )}
 
@@ -134,9 +138,11 @@ function ClipInspector({ clip }: { clip: Clip }) {
             </div>
           );
         })}
-        <button
-          onClick={() => dispatch([{ type: "effect.add", clipId: clip.id, effect: makeEffect("color.basic", newId("fx")) }], "add color")}
-        >+ Color</button>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          <button onClick={() => dispatch([{ type: "effect.add", clipId: clip.id, effect: makeEffect("color.basic", newId("fx")) }], "add color")}>+ Color</button>
+          <button onClick={() => dispatch([{ type: "effect.add", clipId: clip.id, effect: makeEffect("style.grayscale", newId("fx")) }], "add bw")}>+ B&W</button>
+          <button onClick={() => dispatch([{ type: "effect.add", clipId: clip.id, effect: makeEffect("style.vignette", newId("fx")) }], "add vignette")}>+ Vignette</button>
+        </div>
       </div>
     </div>
   );

@@ -23,6 +23,7 @@ export function Timeline(): React.ReactElement {
   const dispatch = useEditor((s) => s.dispatch);
   const setTool = useEditor((s) => s.setTool);
   const setZoom = useEditor((s) => s.setZoom);
+  const zoomFit = useEditor((s) => s.zoomFit);
   const splitAtPlayhead = useEditor((s) => s.splitAtPlayhead);
   const addTextClip = useEditor((s) => s.addTextClip);
   const addSceneClip = useEditor((s) => s.addSceneClip);
@@ -224,6 +225,7 @@ export function Timeline(): React.ReactElement {
         <span className="tl-zoom">
           <button onClick={() => setZoom(pxPerSec / 1.4)}>−</button>
           <button onClick={() => setZoom(pxPerSec * 1.4)}>+</button>
+          <button onClick={zoomFit} title="Fit timeline">Fit</button>
         </span>
       </div>
       <div className="tl-body">

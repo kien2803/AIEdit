@@ -18,6 +18,7 @@ export type Op =
   | { type: "asset.add"; asset: MediaAsset }
   | { type: "asset.remove"; assetId: string }
   | { type: "asset.set"; assetId: string; patch: AssetPatch }
+  | { type: "project.set"; patch: Partial<Project["settings"]> }
   | { type: "track.add"; track: Track }
   | { type: "track.remove"; trackId: TrackId }
   | { type: "track.set"; trackId: TrackId; patch: Partial<Pick<Track, "name" | "muted" | "locked">> }
@@ -67,6 +68,8 @@ export interface ClipPatch {
   enabled?: boolean;
   gain?: number;
   pan?: number;
+  fadeIn?: TimeTicks;
+  fadeOut?: TimeTicks;
   content?: string;
   textStyle?: Partial<TextStyle>;
   /** Replace transform with a static value (keyframe editing comes later). */
@@ -173,6 +176,9 @@ function applyOne(d: Draft<Project>, op: Op): void {
       if (a) Object.assign(a, op.patch);
       break;
     }
+    case "project.set":
+      Object.assign(d.settings, op.patch);
+      break;
     case "track.add":
       d.tracks.push(op.track);
       break;
@@ -318,7 +324,11 @@ function applyOne(d: Draft<Project>, op: Op): void {
       const p = op.patch;
       if (p.enabled !== undefined) c.enabled = p.enabled;
       if (p.transform !== undefined) c.transform = p.transform as Draft<Clip["transform"]>;
-      if (isMediaClip(c) && p.gain !== undefined) c.gain = p.gain;
+      if (isMediaClip(c)) {
+        if (p.gain !== undefined) c.gain = p.gain;
+        if (p.fadeIn !== undefined) c.fadeIn = p.fadeIn;
+        if (p.fadeOut !== undefined) c.fadeOut = p.fadeOut;
+      }
       if (c.kind === "audio" && p.pan !== undefined) c.pan = p.pan;
       if (c.kind === "text") {
         if (p.content !== undefined) c.content = p.content;
@@ -401,6 +411,13 @@ function inverseOf(p: Project, op: Op): Op[] {
         if (v !== undefined) (patch as Record<string, unknown>)[k] = v;
       }
       return [{ type: "asset.set", assetId: op.assetId, patch }];
+    }
+    case "project.set": {
+      const patch: Partial<Project["settings"]> = {};
+      for (const k of Object.keys(op.patch) as (keyof Project["settings"])[]) {
+        (patch as Record<string, unknown>)[k] = p.settings[k];
+      }
+      return [{ type: "project.set", patch }];
     }
     case "track.add":
       return [{ type: "track.remove", trackId: op.track.id }];

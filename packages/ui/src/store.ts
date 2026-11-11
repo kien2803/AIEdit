@@ -40,6 +40,12 @@ interface EditorState {
   select(ids: ClipId[]): void;
   setTool(t: Tool): void;
   setZoom(pxPerSec: number): void;
+  zoomFit(): void;
+  setAspect(w: number, h: number): void;
+  copySelection(): void;
+  paste(): void;
+  duplicateSelection(): void;
+  nudgeSelection(frameTicks: TimeTicks): void;
   seek(t: TimeTicks): void;
   togglePlay(): void;
 
@@ -62,6 +68,8 @@ interface EditorState {
   exportSession(): void;
   exportVideo(): Promise<void>;
 }
+
+let clipboard: import("@aiedit/core").Clip[] = [];
 
 export const useEditor = create<EditorState>((set, get) => {
   const dispatcher = new Dispatcher(createProject());
@@ -107,6 +115,63 @@ export const useEditor = create<EditorState>((set, get) => {
     select: (ids) => set({ selection: ids }),
     setTool: (tool) => set({ tool }),
     setZoom: (pxPerSec) => set({ pxPerSec: Math.max(4, Math.min(400, pxPerSec)) }),
+
+    zoomFit: () => {
+      const end = timelineEnd(get().project);
+      const lane = document.querySelector(".tl-lanes");
+      const w = lane?.clientWidth ?? 800;
+      set({ pxPerSec: Math.max(4, Math.min(400, (w - 120) / Math.max(1, ticks.toSeconds(end)))) });
+    },
+
+    setAspect: (w, h) => {
+      get().dispatch([{ type: "project.set", patch: { width: w, height: h } }], "aspect ratio");
+    },
+
+    copySelection: () => {
+      clipboard = get().selection
+        .map((id) => findClip(get().project, id)?.clip)
+        .filter((c): c is NonNullable<typeof c> => !!c)
+        .map((c) => JSON.parse(JSON.stringify(c)));
+    },
+
+    paste: () => {
+      const s = get();
+      if (!clipboard.length) return;
+      const t0 = Math.min(...clipboard.map((c) => c.start));
+      const ops: Op[] = [];
+      const newSel: string[] = [];
+      for (const src of clipboard) {
+        const clip = JSON.parse(JSON.stringify(src)) as typeof src;
+        clip.id = newId("clip");
+        clip.start = clip.start - t0 + s.playhead;
+        newSel.push(clip.id);
+        let track = s.project.tracks.find((t) => t.kind === (src.kind === "audio" ? "audio" : src.kind === "text" ? "text" : "video"));
+        if (!track) {
+          const kind = src.kind === "audio" ? "audio" : src.kind === "text" ? "text" : "video";
+          track = createTrack(kind, `${kind[0]!.toUpperCase()}1`, newId("track"));
+          ops.push({ type: "track.add", track });
+        }
+        ops.push({ type: "clip.add", trackId: track.id, clip });
+      }
+      s.dispatch(ops, "paste");
+      set({ selection: newSel });
+    },
+
+    duplicateSelection: () => {
+      get().copySelection();
+      get().paste();
+    },
+
+    nudgeSelection: (dt) => {
+      const s = get();
+      const ops: Op[] = s.selection.flatMap((id) => {
+        const loc = findClip(s.project, id);
+        return loc && loc.clip.start + dt >= 0
+          ? [{ type: "clip.move", clipId: id, start: loc.clip.start + dt } as Op]
+          : [];
+      });
+      if (ops.length) s.dispatch(ops, "nudge");
+    },
 
     seek: (t) => {
       set({ playhead: t });

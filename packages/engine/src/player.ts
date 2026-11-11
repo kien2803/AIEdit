@@ -134,11 +134,11 @@ export class PreviewPlayer {
         const handle = this.pool.ensure(clip);
         if (handle?.el) {
           this.syncElement(handle.el, clip, t);
-          this.applyAudioState(handle.el, clip, track.muted);
+          this.applyAudioState(handle.el, clip, track.muted, t);
         }
       } else if (clip.kind === "video") {
         const el = this.pool.get(clip.id)?.el;
-        if (el) this.applyAudioState(el, clip, track.muted);
+        if (el) this.applyAudioState(el, clip, track.muted, t);
       }
     }
 
@@ -223,9 +223,14 @@ export class PreviewPlayer {
     }
   }
 
-  private applyAudioState(el: HTMLVideoElement, clip: VideoClip | AudioClip, trackMuted: boolean): void {
-    el.muted = trackMuted || !clip.enabled || clip.gain <= 0;
-    el.volume = Math.max(0, Math.min(1, clip.gain));
+  private applyAudioState(el: HTMLVideoElement, clip: VideoClip | AudioClip, trackMuted: boolean, t: TimeTicks): void {
+    const local = t - clip.start;
+    let fade = 1;
+    if (clip.fadeIn && clip.fadeIn > 0) fade = Math.min(fade, local / clip.fadeIn);
+    if (clip.fadeOut && clip.fadeOut > 0) fade = Math.min(fade, (clip.duration - local) / clip.fadeOut);
+    fade = Math.max(0, Math.min(1, fade));
+    el.muted = trackMuted || !clip.enabled || clip.gain <= 0 || fade <= 0;
+    el.volume = Math.max(0, Math.min(1, clip.gain * fade));
   }
 
   private textCanvasFor(clip: Clip & { kind: "text" }): HTMLCanvasElement {

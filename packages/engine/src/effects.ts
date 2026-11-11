@@ -17,6 +17,8 @@ export interface EffectUniforms {
   contrast: number;    // 1 = neutral
   saturation: number;  // 1 = neutral
   temperature: number; // -1..1
+  grayscale: number;   // 0..1
+  vignette: number;    // 0..1
   blurPx: number;
 }
 
@@ -25,10 +27,24 @@ export const NEUTRAL_UNIFORMS: EffectUniforms = {
   contrast: 1,
   saturation: 1,
   temperature: 0,
+  grayscale: 0,
+  vignette: 0,
   blurPx: 0,
 };
 
 export const EFFECT_REGISTRY: Record<string, EffectSpec> = {
+  "style.grayscale": {
+    type: "style.grayscale",
+    label: "B&W",
+    defaults: { amount: 1 },
+    toUniforms: (p) => ({ grayscale: p["amount"] ?? 1 }),
+  },
+  "style.vignette": {
+    type: "style.vignette",
+    label: "Vignette",
+    defaults: { amount: 0.5 },
+    toUniforms: (p) => ({ vignette: p["amount"] ?? 0.5 }),
+  },
   "color.basic": {
     type: "color.basic",
     label: "Color",

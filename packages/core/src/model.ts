@@ -80,6 +80,9 @@ export interface VideoClip extends ClipBase {
   /** Speed ramp / freeze frame: clip-local ticks -> source ticks (absolute). */
   timeRemap?: Keyframed<TimeTicks>;
   gain: number; // linear multiplier, 1 = unity
+  /** Audio fade durations at clip edges (CapCut-style). */
+  fadeIn?: TimeTicks;
+  fadeOut?: TimeTicks;
 }
 
 export interface AudioClip extends ClipBase {
@@ -91,6 +94,8 @@ export interface AudioClip extends ClipBase {
   timeRemap?: Keyframed<TimeTicks>;
   gain: number;
   pan: number; // -1..1
+  fadeIn?: TimeTicks;
+  fadeOut?: TimeTicks;
 }
 
 export interface TextClip extends ClipBase {

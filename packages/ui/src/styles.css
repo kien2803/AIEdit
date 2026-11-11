@@ -146,3 +146,4 @@ textarea { width: 100%; min-height: 48px; resize: vertical; }
 .sd-dialog { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; width: 420px; }
 .sd-dialog h3 { margin: 0 0 8px; }
 .sd-note { color: var(--dim); font-size: 12px; }
+.aspect-sel { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }

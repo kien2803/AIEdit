@@ -25,6 +25,8 @@ uniform float uExposure;
 uniform float uContrast;
 uniform float uSaturation;
 uniform float uTemperature;
+uniform float uGrayscale;
+uniform float uVignette;
 out vec4 frag;
 void main() {
   vec4 c = texture(uTex, vUV);
@@ -33,6 +35,9 @@ void main() {
   float luma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
   rgb = mix(vec3(luma), rgb, uSaturation);
   rgb += vec3(uTemperature * 0.1, 0.0, -uTemperature * 0.1);
+  rgb = mix(rgb, vec3(luma), uGrayscale);
+  float d = distance(vUV, vec2(0.5));
+  rgb *= 1.0 - uVignette * smoothstep(0.35, 0.75, d);
   frag = vec4(clamp(rgb, 0.0, 1.0), c.a * uOpacity);
 }`;
 
@@ -96,7 +101,7 @@ export class Compositor {
 
     this.uModel = gl.getUniformLocation(prog, "uModel")!;
     this.uniforms = {};
-    for (const n of ["uTex", "uOpacity", "uExposure", "uContrast", "uSaturation", "uTemperature"]) {
+    for (const n of ["uTex", "uOpacity", "uExposure", "uContrast", "uSaturation", "uTemperature", "uGrayscale", "uVignette"]) {
       this.uniforms[n] = gl.getUniformLocation(prog, n);
     }
     gl.enable(gl.BLEND);
@@ -139,6 +144,8 @@ export class Compositor {
     gl.uniform1f(this.u("uContrast"), post.contrast);
     gl.uniform1f(this.u("uSaturation"), post.saturation);
     gl.uniform1f(this.u("uTemperature"), post.temperature);
+    gl.uniform1f(this.u("uGrayscale"), post.grayscale);
+    gl.uniform1f(this.u("uVignette"), post.vignette);
     const identity = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
     gl.uniformMatrix3fv(this.uModel, false, identity);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -209,6 +216,8 @@ export class Compositor {
     gl.uniform1f(this.u("uContrast"), fx.contrast);
     gl.uniform1f(this.u("uSaturation"), fx.saturation);
     gl.uniform1f(this.u("uTemperature"), fx.temperature);
+    gl.uniform1f(this.u("uGrayscale"), fx.grayscale);
+    gl.uniform1f(this.u("uVignette"), fx.vignette);
 
     // contain-fit into project frame
     const fit = Math.min(this.W / srcW, this.H / srcH);
