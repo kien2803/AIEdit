@@ -46,6 +46,7 @@ interface EditorState {
   addTextClip(): void;
   addSceneClip(): void;
   addAdjustmentClip(): void;
+  addIntroScene(): void;
   splitAtPlayhead(): void;
   deleteSelected(ripple?: boolean): void;
   cutSilences(clipId: ClipId): void;
@@ -189,6 +190,67 @@ export const useEditor = create<EditorState>((set, get) => {
       const clip = makeSceneClip({ sceneId: scene.id, start: s.playhead, duration: dur });
       ops.push({ type: "scene.upsert", scene }, { type: "clip.add", trackId: track.id, clip });
       s.dispatch(ops, "add scene");
+      set({ selection: [clip.id] });
+    },
+
+    /**
+     * Built-in "AIedit" logo intro — demo scene exercising spring keyframes,
+     * per-char text animators, and particle burst, all editable afterwards.
+     */
+    addIntroScene: () => {
+      const s = get();
+      const ops: Op[] = [];
+      let track = s.project.tracks.find((t) => t.kind === "video");
+      if (!track) {
+        track = createTrack("video", "V1", newId("track"));
+        ops.push({ type: "track.add", track });
+      }
+      const dur = sec(4.5);
+      const scene = makeScene({ duration: dur, name: "AIedit intro" });
+      const ACCENT = "#4f8cff";
+
+      // logo mark: springs in
+      scene.elements.push(makeShapeElement({
+        name: "Mark", shape: "rect", fill: ACCENT, w: 220, h: 220, cornerRadius: 48,
+        transform: { keys: [
+          { at: 0, value: { x: 0, y: -60, scaleX: 0.2, scaleY: 0.2, rotation: -0.5, opacity: 0 }, ease: { kind: "linear" } },
+          { at: sec(0.9), value: { x: 0, y: -60, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1 }, ease: { kind: "spring", stiffness: 140, damping: 9 } },
+        ] },
+      }));
+
+      // wordmark: per-char rise + fade
+      scene.elements.push(makeSceneTextElement({
+        name: "Wordmark", content: "AIedit",
+        style: { fontFamily: "sans-serif", fontSize: 150, color: "#ffffff", align: "center" },
+        transform: { static: { x: 0, y: 120, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1 } },
+        animators: [{ selector: "chars", range: [0.15, 0.55], animate: { y: 60, opacity: 1 } }],
+      }));
+
+      // accent underline: wipes left→right via scaleX
+      scene.elements.push(makeShapeElement({
+        name: "Underline", shape: "rect", fill: ACCENT, w: 560, h: 10, cornerRadius: 5,
+        transform: { keys: [
+          { at: sec(1.1), value: { x: -280, y: 220, scaleX: 0, scaleY: 1, rotation: 0, opacity: 1 }, ease: { kind: "linear" } },
+          { at: sec(1.55), value: { x: 0, y: 220, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1 }, ease: { kind: "bezier", cx1: 0, cy1: 0, cx2: 0.58, cy2: 1 } },
+        ] },
+      }));
+
+      // particle burst
+      scene.elements.push({
+        kind: "emitter",
+        id: newId("el"), name: "Burst",
+        start: sec(1.2), end: dur,
+        transform: { static: { x: 0, y: -60, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1 } },
+        enabled: true,
+        particle: {
+          rate: 90, lifetime: 1.4, speed: 380, spread: Math.PI * 2,
+          direction: -Math.PI / 2, size: 4, color: ACCENT, gravity: 320,
+        },
+      });
+
+      const clip = makeSceneClip({ sceneId: scene.id, start: s.playhead, duration: dur });
+      ops.push({ type: "scene.upsert", scene }, { type: "clip.add", trackId: track.id, clip });
+      s.dispatch(ops, "add intro scene");
       set({ selection: [clip.id] });
     },
 

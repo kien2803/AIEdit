@@ -26,6 +26,7 @@ export function Timeline(): React.ReactElement {
   const splitAtPlayhead = useEditor((s) => s.splitAtPlayhead);
   const addTextClip = useEditor((s) => s.addTextClip);
   const addSceneClip = useEditor((s) => s.addSceneClip);
+  const addIntroScene = useEditor((s) => s.addIntroScene);
   const addAdjustmentClip = useEditor((s) => s.addAdjustmentClip);
   const cutSilences = useEditor((s) => s.cutSilences);
   const dropOnTimeline = useEditor((s) => s.dropOnTimeline);
@@ -213,6 +214,7 @@ export function Timeline(): React.ReactElement {
         <button onClick={splitAtPlayhead} title="Split at playhead (S)">Split</button>
         <button onClick={addTextClip} title="Add text (T)">T</button>
         <button onClick={addSceneClip} title="Add scene (motion graphics)">⬒ Scene</button>
+        <button onClick={addIntroScene} title="Demo: AIedit logo intro animation">★ Intro</button>
         <button onClick={addAdjustmentClip} title="Add adjustment layer">Adj</button>
         <button
           onClick={() => selection.length === 1 && cutSilences(selection[0]!)}
