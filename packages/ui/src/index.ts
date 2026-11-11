@@ -7,3 +7,4 @@ export { Inspector } from "./Inspector.jsx";
 export { TemplatesPanel } from "./TemplatesPanel.jsx";
 export { ChatPanel } from "./ChatPanel.jsx";
 export { SettingsDialog } from "./SettingsDialog.jsx";
+export { ErrorBoundary } from "./ErrorBoundary.jsx";

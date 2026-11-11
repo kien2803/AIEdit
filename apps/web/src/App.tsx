@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { ChatPanel, Inspector, MediaBin, Preview, SettingsDialog, Timeline, useEditor } from "@aiedit/ui";
+import { ChatPanel, ErrorBoundary, Inspector, MediaBin, Preview, SettingsDialog, Timeline, useEditor } from "@aiedit/ui";
 
 function RightPanel(): React.ReactElement {
   const [tab, setTab] = React.useState<"inspector" | "chat">("inspector");
@@ -50,6 +50,7 @@ export function App(): React.ReactElement {
   const fileRef = React.useRef<HTMLInputElement>(null);
 
   return (
+    <ErrorBoundary>
     <div className="app">
       <div className="app-header">
         <span className="brand">AIedit</span>
@@ -76,5 +77,6 @@ export function App(): React.ReactElement {
       <div className="app-timeline"><Timeline /></div>
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </div>
+    </ErrorBoundary>
   );
 }
