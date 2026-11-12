@@ -3,8 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  optimizeDeps: {
-    // workspace packages ship raw TS — let Vite prebundle them
-    include: ["@aiedit/core", "@aiedit/engine", "@aiedit/ui"],
-  },
+  // NOTE: do NOT add @aiedit/* to optimizeDeps.include — prebundled workspace
+  // packages go stale when exports change (caused a blank-page bug). Vite
+  // transforms their TS directly as linked source.
 });
