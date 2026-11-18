@@ -2,7 +2,8 @@ import type { AssetId, Clip, MediaAsset } from "@aiedit/core";
 
 export interface MediaHandle {
   clipId: string;
-  el: HTMLVideoElement;
+  /** video/audio element, or img element for still-image assets. */
+  el: HTMLVideoElement | HTMLImageElement;
   /** For text/scene clips: a 2D canvas rendered by the compositor. */
   canvas?: HTMLCanvasElement;
 }
@@ -37,11 +38,7 @@ export class MediaPool {
     const id = assetId ?? (clip as { assetId: string }).assetId;
     const asset = this.assetOf.get(id);
     if (!asset) return undefined;
-    const el = document.createElement("video");
-    el.src = asset.proxyUrl ?? asset.sourceUrl;
-    el.preload = "auto";
-    el.crossOrigin = "anonymous";
-    el.playsInline = true;
+    const el = mediaElementFor(asset);
     const h: MediaHandle = { clipId: clip.id, el };
     this.handles.set(clip.id, h);
     return h;
@@ -57,10 +54,7 @@ export class MediaPool {
     if (existing) return existing;
     const asset = this.assetOf.get(assetId);
     if (!asset) return undefined;
-    const el = document.createElement("video");
-    el.src = asset.proxyUrl ?? asset.sourceUrl;
-    el.preload = "auto";
-    el.playsInline = true;
+    const el = mediaElementFor(asset);
     const h: MediaHandle = { clipId: key, el };
     this.handles.set(key, h);
     return h;
@@ -70,9 +64,13 @@ export class MediaPool {
   retain(activeClipIds: Set<string>): void {
     for (const [id, h] of this.handles) {
       if (!activeClipIds.has(id)) {
-        h.el?.pause();
-        h.el?.removeAttribute("src");
-        h.el?.load();
+        if (h.el instanceof HTMLVideoElement) {
+          h.el.pause();
+          h.el.removeAttribute("src");
+          h.el.load();
+        } else if (h.el) {
+          h.el.removeAttribute("src");
+        }
         this.handles.delete(id);
       }
     }
@@ -85,4 +83,19 @@ export class MediaPool {
   dispose(): void {
     this.retain(new Set());
   }
+}
+
+function mediaElementFor(asset: MediaAsset): HTMLVideoElement | HTMLImageElement {
+  if (asset.kind === "image") {
+    const img = document.createElement("img");
+    img.crossOrigin = "anonymous";
+    img.src = asset.proxyUrl ?? asset.sourceUrl;
+    return img;
+  }
+  const el = document.createElement("video");
+  el.src = asset.proxyUrl ?? asset.sourceUrl;
+  el.preload = "auto";
+  el.crossOrigin = "anonymous";
+  el.playsInline = true;
+  return el;
 }

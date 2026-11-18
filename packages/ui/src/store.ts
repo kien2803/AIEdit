@@ -1,15 +1,16 @@
 import { create } from "zustand";
-import type { AnalysisTrack, ClipId, MediaAsset, Op, Project, TimeTicks } from "@aiedit/core";
+import type { AnalysisTrack, AssetId, ClipId, MediaAsset, Op, Project, TimeTicks } from "@aiedit/core";
 import {
   createProject, createTrack, deserializeProject, Dispatcher,
   exportSessionLog, makeAudioClip, makeVideoClip, makeTextClip,
   findClip, makeScene, makeSceneClip, makeShapeElement, makeSceneTextElement,
   makeAdjustmentClip, newId, resolvePlacement, rippleDeleteOps, sec, serializeProject,
-  timelineEnd, ticks,
+  timelineEnd, ticks, validateOps,
 } from "@aiedit/core";
 import { PreviewPlayer } from "@aiedit/engine";
-import { buildExportPlan, buildFramePlan, WasmRunner } from "@aiedit/export";
+import { buildExportPlan, buildFramePlan, needsFrameRender, WasmRunner } from "@aiedit/export";
 import { captureTemplate, deserializeTemplate, instantiateTemplate, serializeTemplate, type ParamValues, type Template } from "@aiedit/template";
+import { deleteMedia, getMedia, getPeaks, getThumb, listMediaIds, putMedia, putPeaks, putThumb } from "./mediadb.js";
 
 export type Tool = "select" | "blade";
 
@@ -23,6 +24,10 @@ interface EditorState {
   pxPerSec: number;
   /** Audio peaks per asset (0..1 normalized), computed async on import. */
   peaks: Record<string, number[]>;
+  /** Poster thumbnails per asset (dataURL), generated on import / restored from storage. */
+  thumbs: Record<string, string>;
+  /** Assets whose media blob is not in local storage (e.g. project from another machine). */
+  missingAssets: AssetId[];
   /** 0..1 while exporting, null when idle. */
   exportProgress: number | null;
   /** Pending AI/rule-based proposals awaiting review. */
@@ -54,6 +59,7 @@ interface EditorState {
   togglePlay(): void;
 
   importFiles(files: FileList | File[]): Promise<void>;
+  removeAsset(assetId: AssetId): void;
   addToTimeline(assetId: string): void;
   dropOnTimeline(assetId: string, at: TimeTicks, trackIndex: number): void;
   addTextClip(): void;
@@ -73,11 +79,24 @@ interface EditorState {
   deleteTemplate(id: string): void;
   saveProject(): void;
   loadProject(file: File): Promise<void>;
+  /** Re-open the autosaved project (media re-resolved from IndexedDB). */
+  restoreSession(): Promise<void>;
   exportSession(): void;
   exportVideo(): Promise<void>;
 }
 
 let clipboard: import("@aiedit/core").Clip[] = [];
+
+const AUTOSAVE_KEY = "aiedit.autosave.v1";
+const IMAGE_DEFAULT_DURATION = sec(5);
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+let sessionRestored = false;
+/** object URLs handed to the engine — revoked when the project is swapped out. */
+const liveUrls = new Set<string>();
+function trackUrl(url: string): string {
+  liveUrls.add(url);
+  return url;
+}
 
 export const useEditor = create<EditorState>((set, get) => {
   const dispatcher = new Dispatcher(createProject());
@@ -85,6 +104,52 @@ export const useEditor = create<EditorState>((set, get) => {
     set({ project: p });
     get().player?.setProject(p);
   });
+
+  const scheduleAutosave = () => {
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+      try { localStorage.setItem(AUTOSAVE_KEY, serializeProject(get().project)); } catch { /* quota */ }
+    }, 800);
+  };
+
+  /** Re-resolve every asset's sourceUrl from the IndexedDB media store. */
+  const hydrateMedia = async (p: Project, setFn: typeof set): Promise<AssetId[]> => {
+    const missing: AssetId[] = [];
+    const peaks: Record<string, number[]> = {};
+    const thumbs: Record<string, string> = {};
+    for (const asset of Object.values(p.assets)) {
+      const blob = await getMedia(asset.id);
+      if (blob) {
+        asset.sourceUrl = trackUrl(URL.createObjectURL(blob));
+        const pk = await getPeaks(asset.id);
+        if (pk) peaks[asset.id] = pk;
+        const th = await getThumb(asset.id);
+        if (th) thumbs[asset.id] = th;
+      } else {
+        missing.push(asset.id);
+      }
+    }
+    setFn({ peaks, thumbs });
+    return missing;
+  };
+
+  /** Swap the whole project: fresh dispatcher, release old object URLs. */
+  const swapProject = (p: Project, missing: AssetId[]) => {
+    // revoke urls no longer referenced (hydrateMedia already made the new ones)
+    const keep = new Set(Object.values(p.assets).map((a) => a.sourceUrl));
+    for (const url of liveUrls) {
+      if (!keep.has(url)) { URL.revokeObjectURL(url); liveUrls.delete(url); }
+    }
+    const d = new Dispatcher(p);
+    d.subscribe((np) => {
+      set({ project: np });
+      get().player?.setProject(np);
+      scheduleAutosave();
+    });
+    set({ dispatcher: d, project: d.project, selection: [], playhead: 0, missingAssets: missing });
+    get().player?.setProject(d.project);
+    scheduleAutosave();
+  };
 
   return {
     dispatcher,
@@ -95,6 +160,8 @@ export const useEditor = create<EditorState>((set, get) => {
     tool: "select",
     pxPerSec: 80,
     peaks: {},
+    thumbs: {},
+    missingAssets: [],
     exportProgress: null,
     templates: loadTemplates(),
     proposals: [],
@@ -115,10 +182,11 @@ export const useEditor = create<EditorState>((set, get) => {
         activeTool: s.tool,
       });
       get().player?.renderFrame();
+      scheduleAutosave();
     },
 
-    undo: () => { get().dispatcher.undo(); get().player?.renderFrame(); },
-    redo: () => { get().dispatcher.redo(); get().player?.renderFrame(); },
+    undo: () => { get().dispatcher.undo(); get().player?.renderFrame(); scheduleAutosave(); },
+    redo: () => { get().dispatcher.redo(); get().player?.renderFrame(); scheduleAutosave(); },
     canUndo: () => get().dispatcher.canUndo,
     canRedo: () => get().dispatcher.canRedo,
 
@@ -191,7 +259,7 @@ export const useEditor = create<EditorState>((set, get) => {
 
     importFiles: async (files) => {
       for (const file of Array.from(files)) {
-        const url = URL.createObjectURL(file);
+        const url = trackUrl(URL.createObjectURL(file));
         const meta = await probeMedia(url, file);
         const asset: MediaAsset = {
           id: newId("asset"),
@@ -204,10 +272,19 @@ export const useEditor = create<EditorState>((set, get) => {
           ...(meta.height !== undefined ? { height: meta.height } : {}),
         };
         get().dispatch([{ type: "asset.add", asset }], `import ${file.name}`);
+        // persist the media blob so projects survive reload (blob: URLs don't)
+        void putMedia(asset.id, file).catch(() => {});
+        // poster thumbnail for the media bin (persisted too)
+        void makeThumb(url, meta).then((thumb) => {
+          if (!thumb) return;
+          set({ thumbs: { ...get().thumbs, [asset.id]: thumb } });
+          void putThumb(asset.id, thumb).catch(() => {});
+        }).catch(() => {});
         // decode audio peaks in background — feeds waveform + silence analysis
         void computePeaks(url).then((pk) => {
           if (!pk) return;
           set({ peaks: { ...get().peaks, [asset.id]: pk } });
+          void putPeaks(asset.id, pk).catch(() => {});
           const silence = detectSilence(pk, asset.durationTicks);
           if (silence.length) {
             get().dispatch([{
@@ -219,10 +296,30 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
 
+    removeAsset: (assetId) => {
+      const s = get();
+      const users = s.project.tracks.flatMap((t) =>
+        t.clips.filter((c) => "assetId" in c && c.assetId === assetId).map((c) => ({ trackId: t.id, clipId: c.id })));
+      if (users.length) {
+        alert(`"${s.project.assets[assetId]?.name}" is used by ${users.length} clip(s) on the timeline — remove them first.`);
+        return;
+      }
+      s.dispatch([{ type: "asset.remove", assetId }], "remove asset");
+      void deleteMedia(assetId).catch(() => {});
+      const peaks = { ...get().peaks };
+      const thumbs = { ...get().thumbs };
+      delete peaks[assetId];
+      delete thumbs[assetId];
+      set({ peaks, thumbs });
+    },
+
     addToTimeline: (assetId) => {
       const s = get();
       const asset = s.project.assets[assetId];
-      if (!asset?.durationTicks) return;
+      if (!asset) return;
+      // still images have no intrinsic duration — default to 5s, free to extend
+      const dur = asset.kind === "image" ? IMAGE_DEFAULT_DURATION : asset.durationTicks;
+      if (dur === undefined) return;
       // find or create a track of matching kind
       const wantKind = asset.kind === "audio" ? "audio" : "video";
       let track = s.project.tracks.find((t) => t.kind === wantKind);
@@ -234,8 +331,8 @@ export const useEditor = create<EditorState>((set, get) => {
       // append after last clip on that track (or at playhead if empty)
       const end = track.clips.reduce((m, c) => Math.max(m, c.start + c.duration), 0);
       const clip = asset.kind === "audio"
-        ? makeAudioClip({ assetId, start: end, sourceIn: 0, sourceOut: asset.durationTicks })
-        : makeVideoClip({ assetId, start: end, sourceIn: 0, sourceOut: asset.durationTicks });
+        ? makeAudioClip({ assetId, start: end, sourceIn: 0, sourceOut: dur })
+        : makeVideoClip({ assetId, start: end, sourceIn: 0, sourceOut: dur });
       ops.push({ type: "clip.add", trackId: track.id, clip });
       s.dispatch(ops, "add to timeline");
       set({ selection: [clip.id] });
@@ -369,7 +466,7 @@ export const useEditor = create<EditorState>((set, get) => {
     dropOnTimeline: (assetId, at, trackIndex) => {
       const s = get();
       const asset = s.project.assets[assetId];
-      if (!asset?.durationTicks || asset.kind === "image") return;
+      if (!asset) return;
       const wantKind = asset.kind === "audio" ? "audio" : "video";
       const ops: Op[] = [];
       let track = s.project.tracks[trackIndex];
@@ -380,7 +477,8 @@ export const useEditor = create<EditorState>((set, get) => {
         track = createTrack(wantKind, wantKind === "video" ? "V1" : "A1", newId("track"));
         ops.push({ type: "track.add", track });
       }
-      const dur = asset.durationTicks;
+      const dur = asset.kind === "image" ? IMAGE_DEFAULT_DURATION : asset.durationTicks;
+      if (dur === undefined) return;
       const start = resolvePlacement(track, undefined, at, dur);
       if (start === null) return;
       const clip = asset.kind === "audio"
@@ -403,6 +501,15 @@ export const useEditor = create<EditorState>((set, get) => {
       const s = get();
       const p = s.proposals.find((x) => x.id === id);
       if (!p) return;
+      // re-validate at apply time — project may have drifted since proposal
+      const check = validateOps(s.project, p.ops);
+      if (!check.ok) {
+        set({
+          proposals: s.proposals.filter((x) => x.id !== id),
+          sessionEvents: [...s.sessionEvents, { type: "proposal.rejected", id, label: p.label, reason: `invalid: ${check.issues[0]?.message ?? "unknown"}`, at: Date.now() }],
+        });
+        return;
+      }
       s.dispatch(p.ops, `proposal:${p.label}`);
       set({
         proposals: s.proposals.filter((x) => x.id !== id),
@@ -525,13 +632,21 @@ export const useEditor = create<EditorState>((set, get) => {
 
     loadProject: async (file) => {
       const p = deserializeProject(await file.text());
-      const d = new Dispatcher(p);
-      d.subscribe((np) => {
-        set({ project: np });
-        get().player?.setProject(np);
-      });
-      set({ dispatcher: d, project: d.project, selection: [], playhead: 0 });
-      get().player?.setProject(d.project);
+      const missing = await hydrateMedia(p, set);
+      swapProject(p, missing);
+    },
+
+    restoreSession: async () => {
+      if (sessionRestored) return;
+      sessionRestored = true;
+      try {
+        const raw = localStorage.getItem(AUTOSAVE_KEY);
+        if (!raw) return;
+        const p = deserializeProject(raw);
+        if (!Object.keys(p.assets).length && !p.tracks.some((t) => t.clips.length)) return;
+        const missing = await hydrateMedia(p, set);
+        swapProject(p, missing);
+      } catch { /* corrupt autosave — start empty */ }
     },
 
     exportSession: () => {
@@ -553,9 +668,9 @@ export const useEditor = create<EditorState>((set, get) => {
     exportVideo: async () => {
       const s = get();
       if (s.exportProgress !== null) return;
-      const needsFrames = s.project.tracks.some((t) =>
-        t.clips.some((c) => c.kind === "scene" || c.kind === "adjustment"));
-      if (needsFrames) return exportFrameRender(get, set);
+      // frame-render path for anything the filter graph can't express exactly
+      // (scenes, adjustment layers, animated transforms, transitions, remaps)
+      if (needsFrameRender(s.project)) return exportFrameRender(get, set);
       set({ exportProgress: 0 });
       try {
         const project = s.project;
@@ -599,12 +714,7 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     newProject: () => {
-      const d = new Dispatcher(createProject());
-      d.subscribe((p) => {
-        set({ project: p });
-        get().player?.setProject(p);
-      });
-      set({ dispatcher: d, project: d.project, selection: [], playhead: 0 });
+      swapProject(createProject(), []);
     },
   };
 });
@@ -639,6 +749,46 @@ async function probeMedia(url: string, file: File): Promise<{
     ...(el.videoWidth ? { width: el.videoWidth, height: el.videoHeight } : {}),
     hasAudio: true,
   };
+}
+
+/** Poster frame ~160px wide: image → downscale, video → frame at ~10%/1s. */
+async function makeThumb(url: string, meta: { kind: MediaAsset["kind"]; durationTicks?: TimeTicks }): Promise<string | null> {
+  const W = 160;
+  const cnv = document.createElement("canvas");
+  try {
+    if (meta.kind === "image") {
+      const img = new Image();
+      await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error("img")); img.src = url; });
+      const scale = W / img.naturalWidth;
+      cnv.width = W;
+      cnv.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      cnv.getContext("2d")!.drawImage(img, 0, 0, cnv.width, cnv.height);
+      return cnv.toDataURL("image/jpeg", 0.7);
+    }
+    if (meta.kind !== "video") return null;
+    const el = document.createElement("video");
+    el.muted = true;
+    el.preload = "auto";
+    el.src = url;
+    await new Promise<void>((res, rej) => {
+      el.onloadedmetadata = () => {
+        el.currentTime = Math.min(1, (el.duration || 2) * 0.1);
+      };
+      el.onseeked = () => res();
+      el.onerror = () => rej(new Error("vid"));
+      setTimeout(() => res(), 3000);
+    });
+    if (!el.videoWidth) return null;
+    const scale = W / el.videoWidth;
+    cnv.width = W;
+    cnv.height = Math.max(1, Math.round(el.videoHeight * scale));
+    cnv.getContext("2d")!.drawImage(el, 0, 0, cnv.width, cnv.height);
+    el.removeAttribute("src");
+    el.load();
+    return cnv.toDataURL("image/jpeg", 0.7);
+  } catch {
+    return null;
+  }
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
@@ -836,5 +986,6 @@ export interface SessionEvent {
   id: string;
   label: string;
   opCount?: number;
+  reason?: string;
   at: number;
 }

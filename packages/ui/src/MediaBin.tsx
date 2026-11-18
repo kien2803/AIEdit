@@ -7,6 +7,9 @@ export function MediaBin(): React.ReactElement {
   const project = useEditor((s) => s.project);
   const importFiles = useEditor((s) => s.importFiles);
   const addToTimeline = useEditor((s) => s.addToTimeline);
+  const removeAsset = useEditor((s) => s.removeAsset);
+  const missingAssets = useEditor((s) => s.missingAssets);
+  const thumbs = useEditor((s) => s.thumbs);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const assets = Object.values(project.assets);
@@ -35,10 +38,16 @@ export function MediaBin(): React.ReactElement {
               e.dataTransfer.effectAllowed = "copy";
             }}
           >
-            <span className={`mb-kind kind-${a.kind}`}>{a.kind[0]!.toUpperCase()}</span>
-            <span className="mb-name" title={a.name}>{a.name}</span>
+            {thumbs[a.id]
+              ? <img className="mb-thumb" src={thumbs[a.id]} alt="" draggable={false} />
+              : <span className={`mb-kind kind-${a.kind}`}>{a.kind[0]!.toUpperCase()}</span>}
+            <span className="mb-name" title={a.name}>
+              {a.name}
+              {missingAssets.includes(a.id) && <span className="mb-missing" title="Media file not found locally — re-import it">⚠ missing</span>}
+            </span>
             <span className="mb-dur">{a.durationTicks !== undefined ? `${ticks.toSeconds(a.durationTicks).toFixed(1)}s` : "—"}</span>
             <button onClick={() => addToTimeline(a.id)} title="Add to timeline">+</button>
+            <button onClick={() => removeAsset(a.id)} title="Remove asset">×</button>
           </div>
         ))}
       </div>

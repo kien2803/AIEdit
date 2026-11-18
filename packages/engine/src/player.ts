@@ -120,9 +120,15 @@ export class PreviewPlayer {
       } else if (clip.kind === "video") {
         const el = handle.el;
         if (!el) continue;
-        this.syncElement(el, clip, t);
-        if (el.readyState >= 2) {
-          this.compositor.drawClip(clip, handle, el, el.videoWidth || 16, el.videoHeight || 9, t, this.transitionFade(clip, t));
+        if (el instanceof HTMLImageElement) {
+          if (el.complete && el.naturalWidth) {
+            this.compositor.drawClip(clip, handle, el, el.naturalWidth, el.naturalHeight, t, this.transitionFade(clip, t));
+          }
+        } else {
+          this.syncElement(el, clip, t);
+          if (el.readyState >= 2) {
+            this.compositor.drawClip(clip, handle, el, el.videoWidth || 16, el.videoHeight || 9, t, this.transitionFade(clip, t));
+          }
         }
       }
     }
@@ -132,13 +138,13 @@ export class PreviewPlayer {
       activeIds.add(clip.id);
       if (clip.kind === "audio") {
         const handle = this.pool.ensure(clip);
-        if (handle?.el) {
+        if (handle?.el instanceof HTMLVideoElement) {
           this.syncElement(handle.el, clip, t);
           this.applyAudioState(handle.el, clip, track.muted, t);
         }
       } else if (clip.kind === "video") {
         const el = this.pool.get(clip.id)?.el;
-        if (el) this.applyAudioState(el, clip, track.muted, t);
+        if (el instanceof HTMLVideoElement) this.applyAudioState(el, clip, track.muted, t);
       }
     }
 
@@ -171,7 +177,7 @@ export class PreviewPlayer {
         const key = `${clipId}:${el.id}`;
         activeIds.add(key);
         const h = this.pool.ensureKey(key, el.assetId);
-        if (!h?.el) continue;
+        if (!(h?.el instanceof HTMLVideoElement)) continue;
         const src = el.sourceIn + Math.round((sceneT - el.start) * Math.abs(el.speed));
         this.syncRaw(h.el, src, this.clock.playing ? Math.abs(el.speed) * this.clock.rate : 0);
       }
@@ -187,7 +193,7 @@ export class PreviewPlayer {
     const sctx: SceneRenderContext = {
       project: this.project,
       mediaFor: (key, assetId) => this.pool.ensureKey(`${scene.id}:${key}`, assetId),
-      syncMedia: (el, src) => this.syncRaw(el, src, 0),
+      syncMedia: (el, src) => { if (el instanceof HTMLVideoElement) this.syncRaw(el, src, 0); },
     };
     this.sceneRenderer.render(scene, sceneT, ctx, sctx);
   }
@@ -268,16 +274,21 @@ export class PreviewPlayer {
    * required for frame-accurate export (render→capture loops).
    */
   async waitForMediaReady(timeoutMs = 4000): Promise<void> {
-    const els = this.pool.allHandles().map((h) => h.el).filter((e): e is HTMLVideoElement => !!e);
+    const els = this.pool.allHandles().map((h) => h.el).filter((e): e is HTMLVideoElement | HTMLImageElement => !!e);
     await Promise.all(
       els.map(
         (el) =>
           new Promise<void>((res) => {
             const done = () => res();
-            if (!el.seeking && el.readyState >= 2 && !el.paused) return res();
-            if (!el.seeking && el.readyState >= 2 && el.paused) return res();
-            el.addEventListener("seeked", done, { once: true });
-            el.addEventListener("canplay", done, { once: true });
+            if (el instanceof HTMLImageElement) {
+              if (el.complete && el.naturalWidth) return res();
+              el.addEventListener("load", done, { once: true });
+              el.addEventListener("error", done, { once: true });
+            } else {
+              if (!el.seeking && el.readyState >= 2) return res();
+              el.addEventListener("seeked", done, { once: true });
+              el.addEventListener("canplay", done, { once: true });
+            }
             setTimeout(done, timeoutMs);
           }),
       ),

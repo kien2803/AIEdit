@@ -14,8 +14,8 @@ export interface SceneRenderer {
 export interface SceneRenderContext {
   project: Project;
   /** Resolve a media element for a footage element (keyed per element). */
-  mediaFor(key: string, assetId: string): { el?: HTMLVideoElement } | undefined;
-  syncMedia(el: HTMLVideoElement, sourceTicks: TimeTicks, playing: boolean, rate: number): void;
+  mediaFor(key: string, assetId: string): { el?: HTMLVideoElement | HTMLImageElement } | undefined;
+  syncMedia(el: HTMLVideoElement | HTMLImageElement, sourceTicks: TimeTicks, playing: boolean, rate: number): void;
 }
 
 export class CanvasSceneRenderer implements SceneRenderer {
@@ -105,11 +105,13 @@ export class CanvasSceneRenderer implements SceneRenderer {
       }
       case "footage": {
         const handle = ctx.mediaFor(el.id, el.assetId);
-        if (handle?.el && handle.el.readyState >= 2) {
+        const v = handle?.el;
+        const ready = v instanceof HTMLImageElement ? v.complete && v.naturalWidth > 0 : v && v.readyState >= 2;
+        if (v && ready) {
           const src = el.sourceIn + Math.round(local * Math.abs(el.speed));
-          ctx.syncMedia(handle.el, src, false, 0);
-          const v = handle.el;
-          const vw = v.videoWidth || 16, vh = v.videoHeight || 9;
+          ctx.syncMedia(v, src, false, 0);
+          const vw = v instanceof HTMLImageElement ? v.naturalWidth : v.videoWidth || 16;
+          const vh = v instanceof HTMLImageElement ? v.naturalHeight : v.videoHeight || 9;
           const { project } = ctx;
           const fit = Math.min(project.settings.width / vw, project.settings.height / vh);
           ctx2d.drawImage(v, (-vw * fit) / 2, (-vh * fit) / 2, vw * fit, vh * fit);

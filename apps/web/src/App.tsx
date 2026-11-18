@@ -18,6 +18,10 @@ function RightPanel(): React.ReactElement {
 
 export function App(): React.ReactElement {
   useEffect(() => {
+    void useEditor.getState().restoreSession();
+  }, []);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const s = useEditor.getState();
       const tag = (e.target as HTMLElement).tagName;

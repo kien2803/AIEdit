@@ -58,7 +58,10 @@ export function buildExportPlan(
     const existing = inputIndexOf.get(assetId);
     if (existing !== undefined) return existing;
     const idx = inputs.length;
-    inputs.push({ file: `in${idx}.mp4`, assetId });
+    const asset = project.assets[assetId];
+    inputs.push(asset?.kind === "image"
+      ? { file: `in${idx}.img`, assetId }
+      : { file: `in${idx}.mp4`, assetId });
     inputIndexOf.set(assetId, idx);
     return idx;
   };
@@ -120,10 +123,12 @@ export function buildExportPlan(
   audioLabels.push(...audio.labels);
 
   const argv: string[] = [];
-  // inputs: media files then text PNGs (looped stills)
+  // inputs: media files then text PNGs / still images (looped)
   for (const inp of inputs) {
     if (inp.textClipId) {
       argv.push("-loop", "1", "-i", inp.file);
+    } else if (inp.file.endsWith(".img")) {
+      argv.push("-f", "image2", "-loop", "1", "-framerate", String(fpsF), "-i", inp.file);
     } else {
       argv.push("-i", inp.file);
     }
@@ -223,14 +228,21 @@ function videoChain(project: Project, clip: VideoClip, inputIdx: number): string
 function eqParams(effects: { enabled: boolean; type: string; params: Record<string, number> }[]): string | null {
   let brightness = 0, contrast = 1, saturation = 1;
   let rr = 1, bb = 1;
+  let vignette = 0;
   for (const e of effects) {
-    if (!e.enabled || e.type !== "color.basic") continue;
-    brightness += (e.params["exposure"] ?? 0) * 0.15; // EV → eq brightness approx
-    contrast *= e.params["contrast"] ?? 1;
-    saturation *= e.params["saturation"] ?? 1;
-    const temp = e.params["temperature"] ?? 0;
-    rr *= 1 + temp * 0.1;
-    bb *= 1 - temp * 0.1;
+    if (!e.enabled) continue;
+    if (e.type === "color.basic") {
+      brightness += (e.params["exposure"] ?? 0) * 0.15; // EV → eq brightness approx
+      contrast *= e.params["contrast"] ?? 1;
+      saturation *= e.params["saturation"] ?? 1;
+      const temp = e.params["temperature"] ?? 0;
+      rr *= 1 + temp * 0.1;
+      bb *= 1 - temp * 0.1;
+    } else if (e.type === "style.grayscale") {
+      saturation *= 1 - Math.max(0, Math.min(1, e.params["amount"] ?? 1));
+    } else if (e.type === "style.vignette") {
+      vignette = Math.max(vignette, e.params["amount"] ?? 0.5);
+    }
   }
   const parts: string[] = [];
   if (brightness !== 0 || contrast !== 1 || saturation !== 1) {
@@ -238,6 +250,9 @@ function eqParams(effects: { enabled: boolean; type: string; params: Record<stri
   }
   if (rr !== 1 || bb !== 1) {
     parts.push(`colorchannelmixer=rr=${rr.toFixed(3)}:bb=${bb.toFixed(3)}`);
+  }
+  if (vignette > 0) {
+    parts.push(`vignette=angle=${(vignette * Math.PI / 4).toFixed(4)}`);
   }
   return parts.length ? parts.join(",") : null;
 }
@@ -252,6 +267,11 @@ function audioChain(clip: VideoClip | AudioClip, inputIdx: number, outLbl: strin
   while (sp > 2) { f.push("atempo=2.0"); sp /= 2; }
   while (sp < 0.5) { f.push("atempo=0.5"); sp /= 0.5; }
   if (sp !== 1) f.push(`atempo=${sp.toFixed(4)}`);
+  // audio fades (mirror player.applyAudioState's linear gain ramp)
+  if (clip.fadeIn && clip.fadeIn > 0) f.push(`afade=t=in:st=0:d=${sec(clip.fadeIn)}`);
+  if (clip.fadeOut && clip.fadeOut > 0) {
+    f.push(`afade=t=out:st=${sec(Math.max(0, clip.duration - clip.fadeOut))}:d=${sec(clip.fadeOut)}`);
+  }
   const pan = clip.kind === "audio" ? clip.pan : 0;
   if (pan !== 0) {
     const l = Math.cos(((pan + 1) * Math.PI) / 4).toFixed(4);
@@ -299,6 +319,24 @@ function buildAudioSection(
     }
   }
   return { filters, labels };
+}
+
+/**
+ * True when the timeline contains features the filter-graph path can't express
+ * (scene/adjustment clips, animated transforms, time remaps, transitions) —
+ * the compositor must render frames for preview-accurate output.
+ */
+export function needsFrameRender(project: Project): boolean {
+  for (const track of project.tracks) {
+    for (const clip of track.clips) {
+      if (!clip.enabled) continue;
+      if (clip.kind === "scene" || clip.kind === "adjustment") return true;
+      if ("keys" in clip.transform) return true;
+      if (clip.transitions && (clip.transitions.in || clip.transitions.out)) return true;
+      if ((clip.kind === "video" || clip.kind === "audio") && clip.timeRemap) return true;
+    }
+  }
+  return false;
 }
 
 export interface FrameRenderPlan {

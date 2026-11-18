@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import type { Op } from "@aiedit/core";
+import { validateOps } from "@aiedit/core";
 import { parsePromptSmart } from "./llm.js";
 import { useEditor } from "./store.js";
 
@@ -9,6 +10,8 @@ interface Msg {
   ops?: Op[];
   label?: string;
   applied?: boolean;
+  /** validation failures — ops are never applied when set */
+  invalid?: string[];
 }
 
 export function ChatPanel(): React.ReactElement {
@@ -46,11 +49,19 @@ export function ChatPanel(): React.ReactElement {
     const s = useEditor.getState();
     void parsePromptSmart(text, { project: s.project, playhead: s.playhead, selection: s.selection }, llm)
       .then((parsed) => {
+        // never trust model output: whitelist + shape + refs + dry-run
+        const check = parsed.ops
+          ? validateOps(useEditor.getState().project, parsed.ops)
+          : { ok: true, issues: [] };
         setMsgs((m) => [
           ...m,
           {
-            role: "ai", text: parsed.reply,
-            ...(parsed.ops ? { ops: parsed.ops, label: parsed.label } : {}),
+            role: "ai",
+            text: check.ok
+              ? parsed.reply
+              : `${parsed.reply}\n\n⚠ generated ops rejected by validation:\n${check.issues.slice(0, 4).map((i) => `• ${i.op}: ${i.message}`).join("\n")}`,
+            ...(parsed.ops && check.ok ? { ops: parsed.ops, label: parsed.label } : {}),
+            ...(!check.ok ? { invalid: check.issues.map((i) => `${i.op}: ${i.message}`) } : {}),
           },
         ]);
         if (parsed.action) runAction(parsed.action);
@@ -62,11 +73,18 @@ export function ChatPanel(): React.ReactElement {
   };
 
   const apply = (i: number) => {
-    setMsgs((m) => {
-      const msg = m[i]!;
-      if (msg.ops && !msg.applied) dispatch(msg.ops, msg.label ?? "ai prompt");
-      return m.map((x, j) => (j === i ? { ...x, applied: true } : x));
-    });
+    const msg = msgs[i]!;
+    if (!msg.ops || msg.applied) return;
+    // re-validate against current state — the project may have changed
+    const check = validateOps(useEditor.getState().project, msg.ops);
+    if (!check.ok) {
+      setMsgs((m) => m.map((x, j) => (j === i
+        ? { ...x, invalid: check.issues.map((e) => `${e.op}: ${e.message}`), text: `${x.text}\n\n⚠ ops no longer valid: ${check.issues[0]!.message}` }
+        : x)));
+      return;
+    }
+    dispatch(msg.ops, msg.label ?? "ai prompt");
+    setMsgs((m) => m.map((x, j) => (j === i ? { ...x, applied: true } : x)));
   };
 
   return (
@@ -75,6 +93,7 @@ export function ChatPanel(): React.ReactElement {
         {msgs.map((m, i) => (
           <div key={i} className={`cp-msg ${m.role}`}>
             <div>{m.text}</div>
+            {m.invalid && <div className="cp-invalid">{m.invalid.slice(0, 3).join(" · ")}</div>}
             {m.ops && (
               <button className="cp-apply" disabled={m.applied} onClick={() => apply(i)}>
                 {m.applied ? "✓ applied" : `Apply (${m.ops.length} ops)`}

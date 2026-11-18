@@ -8,3 +8,4 @@ export * from "./dispatcher.js";
 export * from "./session.js";
 export * from "./placement.js";
 export * from "./migrate.js";
+export * from "./validate.js";

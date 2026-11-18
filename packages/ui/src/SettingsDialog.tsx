@@ -20,6 +20,13 @@ export function SettingsDialog({ onClose }: { onClose: () => void }): React.Reac
         <p className="sd-note">
           OpenAI-compatible endpoint. Key stays in localStorage — browser calls the API directly.
         </p>
+        {form.apiKey && !form.baseURL.includes("localhost") && !form.baseURL.includes("127.0.0.1") && (
+          <p className="sd-warn">
+            ⚠ Privacy: prompts include a summary of your project (asset names, track layout,
+            playhead). That data is sent to <strong>{form.baseURL || "the configured endpoint"}</strong> —
+            never to us. Generated ops are validated before they can touch your timeline.
+          </p>
+        )}
         <label className="in-num"><span>Preset</span>
           <select
             onChange={(e) => {

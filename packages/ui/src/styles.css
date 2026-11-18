@@ -154,3 +154,7 @@ textarea { width: 100%; min-height: 48px; resize: vertical; }
 .pb-text { flex: 1; font-size: 12px; }
 .pb-ok { background: var(--accent); color: #fff; }
 .pb-more { color: var(--dim); font-size: 11px; }
+.mb-missing { color: #f0a040; font-size: 10px; margin-left: 6px; }
+.mb-thumb { width: 40px; height: 26px; object-fit: cover; border-radius: 3px; flex: none; }
+.cp-invalid { color: #f0a040; font-size: 11px; margin-top: 4px; }
+.sd-warn { color: #f0c060; font-size: 12px; background: #3a2c10; padding: 8px 10px; border-radius: 6px; line-height: 1.5; }
